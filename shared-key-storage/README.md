@@ -15,10 +15,11 @@ flows and their limitations.
 
 ## Layout
 
-| Package                | Contents                                                                                  |
-| ---------------------- | ----------------------------------------------------------------------------------------- |
-| [`program/`](program/) | Solana program for chunked uploads, owner-authorized publication and upload cancellation. |
-| [`sdk/`](sdk/)         | TypeScript client for storage, key records, the user registry and private smart accounts. |
+| Package                  | Contents                                                                                  |
+| ------------------------ | ----------------------------------------------------------------------------------------- |
+| [`program/`](program/)   | Solana program for chunked uploads, owner-authorized publication and upload cancellation. |
+| [`sdk/`](sdk/)           | TypeScript client for storage, key records, the user registry and private smart accounts. |
+| [`examples/`](examples/) | Scripts that create and update a record with the raw storage SDK.                         |
 
 ## Key record encryption
 

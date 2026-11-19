@@ -1,0 +1,27 @@
+{
+  "name": "@heliuslabs/shared-key-storage-examples",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Create and update a record with the Shared Key Storage SDK",
+  "type": "module",
+  "scripts": {
+    "check": "oxfmt --check . && tsc --noEmit",
+    "create-record": "node --import tsx create.ts",
+    "update-record": "node --import tsx update.ts"
+  },
+  "dependencies": {
+    "@heliuslabs/shared-key-storage": "link:../sdk",
+    "@heliuslabs/spr": "0.9.0-alpha",
+    "@solana/kit": "^8.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "oxfmt": "^0.61.0",
+    "tsx": "latest",
+    "typescript": "^7.0.2"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "packageManager": "pnpm@11.18.0"
+}
