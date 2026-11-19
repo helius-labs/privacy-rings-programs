@@ -3,10 +3,28 @@
 Two scripts that use the raw storage API of the [SDK](../sdk/). Your wallet
 is the record owner, rent payer and refund destination.
 
-| Script      | What it does                                                                                       |
-| ----------- | -------------------------------------------------------------------------------------------------- |
-| `create.ts` | Uploads record 0 in chunks, then applies it, which creates the head PDA `[b"head", wallet]`.       |
-| `update.ts` | Uploads a replacement, applies it against the current revision, and refunds the old record's rent. |
+### create
+
+Creates two accounts:
+
+- **Buffer account**: stores the record bytes. The script uploads them in
+  768-byte chunks, one transaction per chunk.
+- **Pointer account**: the PDA `["head", wallet]`. It stores the buffer
+  address and a revision. The final transaction creates it and marks the
+  buffer as sealed.
+
+Run once per wallet. To replace the record, run `update`.
+
+### update
+
+Replaces the record:
+
+- **New buffer account**: stores the new record bytes, uploaded the same
+  way. The old buffer stays current until the final transaction.
+- **Pointer account**: the final transaction points it at the new buffer,
+  increments the revision, closes the old buffer and sends its rent to the
+  old buffer's refund address. It fails if the revision changed after the
+  script read it.
 
 ## Run
 
