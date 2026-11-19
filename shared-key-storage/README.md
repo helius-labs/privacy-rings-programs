@@ -3,7 +3,7 @@
 A Squads smart account whose vault holds private balances in the zolana
 shielded pool (SPP). Every signer views them through a shared viewing key,
 which the signers encrypt to each other in a key record. A storage program
-keeps the current key record behind a head PDA and closes superseded
+keeps the current key record behind a pointer PDA and closes superseded
 accounts. No proof checks a key record. See [`design.md`](design.md) for the
 flows and their limitations.
 
@@ -17,7 +17,7 @@ flows and their limitations.
 
 | Package                  | Contents                                                                                  |
 | ------------------------ | ----------------------------------------------------------------------------------------- |
-| [`program/`](program/)   | Solana program for chunked uploads, owner-authorized publication and upload cancellation. |
+| [`program/`](program/)   | Anchor program for chunked uploads, owner-authorized publication and upload cancellation. |
 | [`sdk/`](sdk/)           | TypeScript client for storage, key records, the user registry and private smart accounts. |
 | [`examples/`](examples/) | Scripts that create and update a record with the raw storage SDK.                         |
 
@@ -43,12 +43,13 @@ serialized bytes; it does not parse this structure.
 ## Transactions
 
 - The vault is the SPP owner signer and fee payer and pays the rent of its
-  user registry record and storage head, all inside Squads CPIs, so it needs
+  user registry record and storage pointer, all inside Squads CPIs, so it needs
   SOL. Squads strips the signer flag of its own members inside the CPI, so a
   member cannot pay there.
-- Uploads are separate transactions. `prepareKeyRecordUpload` returns `store`
-  instructions that append 768-byte chunks (the last may be shorter), growing
-  the buffer as needed; each fits a 1,232-byte transaction. Its rent payer
+- Uploads are separate transactions. `prepareKeyRecordUpload` returns a
+  `create_buffer` instruction for the first 768-byte chunk and `store`
+  instructions that append the rest (the last may be shorter), growing the
+  buffer as needed; each fits a 1,232-byte transaction. Its rent payer
   signs every chunk; the vault authorizes publication. The optional `refund`
   destination, the payer by default, gets the rent back, so a sponsor can pay
   for uploads and route the rent wherever it wants.
@@ -67,17 +68,22 @@ serialized bytes; it does not parse this structure.
 - Rotate reads kept signers' viewing keys from their user registry records,
   so every kept signer must be registered.
 - An approver calls `checkOwnEntry` before co-signing Register or a rotate.
-  It reads the previous record from the vault's storage head itself, the same
+  It reads the previous record from the vault's storage pointer itself, the same
   record the signed `apply` binds, so a rotator cannot substitute one. It
   verifies every historical ciphertext and checks that the new vector
   preserves all previous keys in order.
-- `apply` checks the complete upload, approved hash, predecessor and head
-  revision. It seals the replacement, advances `[b"head", vault]` and its
-  revision, closes the old record, and refunds its balance to that upload's
-  destination. These changes are atomic. Until apply succeeds, the old record
-  stays active. The active record cannot be edited or separately closed. The
-  rent payer of an unpublished buffer can cancel it with
-  `upload.closeInstruction`, refunding the destination.
+- `apply` checks the complete upload, approved hash, predecessor and pointer
+  revision. It seals the replacement, advances the vault's pointer PDA
+  (`[b"head", vault]`) and its revision, closes the old record, and refunds
+  its balance to that upload's destination. These changes are atomic. Until
+  apply succeeds, the old record stays active. The active record cannot be
+  edited or separately closed. The rent payer of an unpublished buffer can
+  cancel it with `upload.closeInstruction` (`close_buffer`), refunding the
+  destination.
+- The vault can retire its storage with the program's `close_pointer`, which
+  closes the pointer into a recipient it names and the current record into
+  that record's destination. The pointer's revision then restarts at zero.
+  The SDK has no builder for it yet.
 - `recoverVaultKeys` decrypts the current and all old viewing keys directly
   from the latest record. It needs no historical record lookup. The SDK's
   `syncWallet` tries every key on the vault's outputs, so UTXOs sent before
@@ -88,7 +94,7 @@ serialized bytes; it does not parse this structure.
 approvers check the new record, then send the final instructions together.
 `registerVaultInstruction` takes the address returned by
 `prepareKeyRecordUpload` as its `buffer` argument.
-See [the storage protocol](program/STORAGE.md) for its layout and checks.
+The account layouts and checks are in [`program/src/`](program/src/).
 The replacement carries the entire encrypted key history. Only the current
 record stays on chain after apply; its size is limited to 10 MiB including
 the storage header. The storage program checks upload metadata and
@@ -124,5 +130,5 @@ Run the storage program’s local SBF tests from `shared-key-storage` with the
 Anza CLI installed.
 
 ```bash
-cargo test-sbf --tools-version v1.54 --manifest-path program/Cargo.toml --features bpf-entrypoint --test storage
+cargo test-sbf --tools-version v1.54 --manifest-path program/Cargo.toml --test storage
 ```

@@ -11,29 +11,26 @@ crate-type = ["cdylib", "lib"]
 
 [features]
 default = []
-bpf-entrypoint = []
+# Anchor emits the entrypoint unless `no-entrypoint` is set.
+no-entrypoint = []
+cpi = ["no-entrypoint"]
+idl-build = ["anchor-lang/idl-build"]
 
 [dependencies]
-pinocchio = { version = "0.11", features = ["cpi", "account-resize"] }
-pinocchio-system = "0.6"
-# Address::find_program_address on host builds; SBF builds use the syscall.
-# `wincode` derives the instruction and account schemas over Address fields.
-solana-address = { version = "2.6", features = ["curve25519", "wincode"] }
-solana-msg = { version = "3.1", default-features = false }
+anchor-lang = { version = "1.2.2", features = ["init-if-needed"] }
 # Chained upload hash; SBF builds use the sol_sha256 syscall.
 solana-sha256-hasher = { version = "3.1", features = ["sha2"] }
-thiserror = { version = "2", default-features = false }
-wincode = { version = "0.6", default-features = false, features = ["derive"] }
 
 [dev-dependencies]
-mollusk-svm = "=0.13.4"
-solana-account = "3.4"
+mollusk-svm = "=0.17.1"
+# The Account and Instruction versions mollusk-svm 0.17 uses.
+solana-account = "5"
 # Address::new_unique in tests.
 solana-address = { version = "2.6", features = ["atomic", "curve25519"] }
-solana-instruction = "3.2"
+solana-instruction = "4"
+# Runtime-level failures (e.g. PrivilegeEscalation) in mollusk results.
+solana-instruction-error = "3"
 solana-program-error = "3.0"
-# wincode::serialize in tests.
-wincode = { version = "0.6", default-features = false, features = ["alloc", "derive"] }
 
 [lints.rust.unexpected_cfgs]
 level = "allow"

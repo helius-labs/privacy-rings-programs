@@ -34,8 +34,6 @@ import {
 
 const addressEncoder = getAddressEncoder();
 const addressDecoder = getAddressDecoder();
-/** Tag, owner, predecessor, total length and offset before each chunk. */
-const STORE_PREFIX = 1 + 32 + 32 + 4 + 4;
 
 async function newAddress(): Promise<Address> {
   return (await generateKeyPairSigner()).address;
@@ -62,7 +60,8 @@ describe("versioned storage", () => {
         Uint8Array.from(instruction.data!),
         "store",
       );
-      assert.equal(reader.u8("tag"), 1);
+      // create_buffer (4) for the first chunk, store (1) for the rest.
+      assert.equal(reader.u8("tag"), written === 0 ? 4 : 1);
       assert.equal(addressDecoder.decode(reader.bytes(32, "owner")), owner);
       assert.equal(
         addressDecoder.decode(reader.bytes(32, "predecessor")),
@@ -70,10 +69,7 @@ describe("versioned storage", () => {
       );
       assert.equal(reader.u32("length"), bytes.length);
       assert.equal(reader.u32("offset"), written);
-      const chunk = reader.bytes(
-        instruction.data!.length - STORE_PREFIX,
-        "chunk",
-      );
+      const chunk = reader.bytes(reader.u32("chunk length"), "chunk");
       reader.end();
       chunks.push(chunk);
       written += chunk.length;
@@ -117,8 +113,9 @@ describe("versioned storage", () => {
         { address: owner, role: AccountRole.READONLY_SIGNER },
         { address: owner, role: AccountRole.WRITABLE_SIGNER },
         { address: EMPTY_RECORD_ADDRESS, role: AccountRole.READONLY },
-        { address: EMPTY_RECORD_ADDRESS, role: AccountRole.READONLY },
-        { address: EMPTY_RECORD_ADDRESS, role: AccountRole.READONLY },
+        // No predecessor: the program's own address marks an absent account.
+        { address: STORAGE_PROGRAM_ADDRESS, role: AccountRole.READONLY },
+        { address: STORAGE_PROGRAM_ADDRESS, role: AccountRole.READONLY },
       ],
       "the first apply closes nothing and refunds no one",
     );

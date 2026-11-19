@@ -37,7 +37,8 @@ export const MAX_RECORD_SIZE = 10 * 1024 * 1024 - BUFFER_HEADER_SIZE;
 export const EMPTY_RECORD_ADDRESS = SYSTEM_PROGRAM_ADDRESS;
 const STORE = 1;
 const APPLY = 2;
-const CLOSE = 3;
+const CLOSE_BUFFER = 3;
+const CREATE_BUFFER = 4;
 const addressEncoder = getAddressEncoder();
 const addressDecoder = getAddressDecoder();
 const utf8 = new TextEncoder();
@@ -256,6 +257,7 @@ export async function prepareRecordUpload(
     offset < input.bytes.length;
     offset += STORAGE_CHUNK_SIZE
   ) {
+    const chunk = input.bytes.subarray(offset, offset + STORAGE_CHUNK_SIZE);
     instructions.push({
       programAddress: STORAGE_PROGRAM_ADDRESS,
       accounts: [
@@ -264,13 +266,15 @@ export async function prepareRecordUpload(
         { address: SYSTEM_PROGRAM_ADDRESS, role: AccountRole.READONLY },
         { address: refund, role: AccountRole.READONLY },
       ],
+      // The first chunk creates the buffer; later chunks append to it.
       data: new ByteWriter()
-        .u8(STORE)
+        .u8(offset === 0 ? CREATE_BUFFER : STORE)
         .bytes(addressEncoder.encode(input.owner))
         .bytes(addressEncoder.encode(input.previous))
         .u32(input.bytes.length)
         .u32(offset)
-        .bytes(input.bytes.subarray(offset, offset + STORAGE_CHUNK_SIZE))
+        .u32(chunk.length)
+        .bytes(chunk)
         .finish(),
     });
   }
@@ -284,7 +288,7 @@ export async function prepareRecordUpload(
         cancelSigner,
         { address: refund, role: AccountRole.WRITABLE },
       ],
-      data: Uint8Array.of(CLOSE),
+      data: Uint8Array.of(CLOSE_BUFFER),
     },
   };
 }
@@ -302,12 +306,13 @@ export async function applyRecordInstruction(
 ): Promise<Instruction> {
   if (bytes.length === 0 || bytes.length > MAX_RECORD_SIZE)
     throw new Error("invalid record length");
-  // The first publication closes nothing: both slots hold the System Program.
+  // The first publication closes nothing: both slots hold the storage
+  // program's own address, which the program reads as "no account".
   const closed =
     predecessor === undefined
       ? [
-          { address: SYSTEM_PROGRAM_ADDRESS, role: AccountRole.READONLY },
-          { address: SYSTEM_PROGRAM_ADDRESS, role: AccountRole.READONLY },
+          { address: STORAGE_PROGRAM_ADDRESS, role: AccountRole.READONLY },
+          { address: STORAGE_PROGRAM_ADDRESS, role: AccountRole.READONLY },
         ]
       : [
           { address: predecessor.address, role: AccountRole.WRITABLE },
