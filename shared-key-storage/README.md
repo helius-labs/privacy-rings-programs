@@ -1,4 +1,4 @@
-# Private smart account (client only)
+# Shared Key Storage
 
 A Squads smart account whose vault holds private balances in the zolana
 shielded pool (SPP). Every signer views them through a shared viewing key,
@@ -15,16 +15,10 @@ flows and their limitations.
 
 ## Layout
 
-| File                                                                     |                                                                                                                                                       |
-| ------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [`program/src/lib.rs`](program/src/lib.rs)                               | The storage program: chunked uploads, owner-authorized publication and payer-signed cancellation of unpublished uploads.                              |
-| [`src/squads.ts`](src/squads.ts)                                         | Squads PDAs, `createSmartAccount`, `executeTransactionSyncV2`, `executeSettingsTransactionSync`, the `Settings` decoder and the sync consensus check. |
-| [`src/keyRecord.ts`](src/keyRecord.ts)                                   | The key record layout (`177 + 97 · N + 65 · H` bytes) and its encryption.                                                                             |
-| [`src/registry.ts`](src/registry.ts)                                     | The registered viewing key, current record and upload/apply builders.                                                                                 |
-| [`src/storage.ts`](src/storage.ts)                                       | Buffer upload and apply instructions, account decoders and head PDA derivation.                                                                       |
-| [`src/smartAccount.ts`](src/smartAccount.ts)                             | The Create, Register, Rotate and Spend flows.                                                                                                         |
-| [`src/bytes.ts`](src/bytes.ts)                                           | The little-endian byte reader and writer.                                                                                                             |
-| [`test/network/smartAccount.test.ts`](test/network/smartAccount.test.ts) | All flows end to end on devnet or mainnet.                                                                                                            |
+| Package                | Contents                                                                                  |
+| ---------------------- | ----------------------------------------------------------------------------------------- |
+| [`program/`](program/) | Solana program for chunked uploads, owner-authorized publication and upload cancellation. |
+| [`sdk/`](sdk/)         | TypeScript client for storage, key records, the user registry and private smart accounts. |
 
 ## Key record encryption
 
@@ -101,13 +95,15 @@ authorization; key-record checks remain client-side.
 
 ## Run
 
-Install Node.js 24+ and pnpm. Set the Helius RPC URLs in the environment;
-the SDK uses the same endpoint's `/v1/spr` for the indexer and attested TEE
-prover. The tests check the cluster's genesis hash, deployed programs,
-Squads configuration, TEE attestation and proving keys before funding accounts.
+Install Node.js 24+ and pnpm. Run the SDK commands from `shared-key-storage/sdk`.
+Set the Helius RPC URLs in the environment. The SDK uses the same endpoint's
+`/v1/spr` for the indexer and attested TEE prover. The tests check the cluster's
+genesis hash, deployed programs, Squads configuration, TEE attestation and
+proving keys before funding accounts.
 
 ```bash
 pnpm install
+pnpm build                   # emit JavaScript and TypeScript declarations
 pnpm test                    # unit tests
 export SOLANA_DEVNET_RPC_URL='https://devnet.helius-rpc.com/?api-key=YOUR_KEY'
 export SOLANA_MAINNET_RPC_URL='https://mainnet.helius-rpc.com/?api-key=YOUR_KEY'
@@ -123,7 +119,8 @@ from the fresh members and vaults, including after a failed assertion. Current
 account rent and the private balances remain on chain; superseded record rent
 is refunded to the payer.
 
-Run the storage program’s local SBF tests with the Anza CLI installed.
+Run the storage program’s local SBF tests from `shared-key-storage` with the
+Anza CLI installed.
 
 ```bash
 cargo test-sbf --tools-version v1.54 --manifest-path program/Cargo.toml --features bpf-entrypoint --test storage
