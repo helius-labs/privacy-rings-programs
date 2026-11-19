@@ -50,7 +50,7 @@ export async function fetchPublishedKeyRecord(
   client: SprClient,
   vault: Address,
 ): Promise<KeyRecordPublication | undefined> {
-  const published = await fetchPublishedRecord(client, vault);
+  const published = await fetchPublishedRecord(client.solanaRpc, vault);
   if (published === undefined) return undefined;
   const { bytes, ...predecessor } = published;
   return { ...predecessor, record: decodeKeyRecord(bytes) };

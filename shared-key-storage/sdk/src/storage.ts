@@ -3,16 +3,19 @@ import { createHash } from "node:crypto";
 import {
   AccountRole,
   address,
+  fetchEncodedAccount,
   generateKeyPairSigner,
   getAddressDecoder,
   getAddressEncoder,
   getProgramDerivedAddress,
   type Address,
   type AccountSignerMeta,
+  type GetAccountInfoApi,
   type Instruction,
+  type MaybeEncodedAccount,
+  type Rpc,
   type TransactionSigner,
 } from "@solana/kit";
-import type { SprClient } from "@heliuslabs/spr/client";
 import { ByteReader, ByteWriter, bytesEqual } from "./bytes.js";
 import { SYSTEM_PROGRAM_ADDRESS } from "./squads.js";
 
@@ -137,23 +140,34 @@ export function decodeStoredRecord(bytes: Uint8Array): StoredRecord {
   };
 }
 
+/** Any `@solana/kit` RPC that can read accounts. */
+export type StorageRpc = Rpc<GetAccountInfoApi>;
+
+/** Reads at `confirmed`, so a record applied in a confirmed transaction is visible. */
+function fetchAccount(
+  rpc: StorageRpc,
+  account: Address,
+): Promise<MaybeEncodedAccount> {
+  return fetchEncodedAccount(rpc, account, { commitment: "confirmed" });
+}
+
 export async function fetchStorageHead(
-  client: SprClient,
+  rpc: StorageRpc,
   owner: Address,
 ): Promise<StorageHead | undefined> {
-  const account = await client.getAccount(await storageHeadAddress(owner));
-  if (account === undefined) return undefined;
-  if (account.owner !== STORAGE_PROGRAM_ADDRESS)
+  const account = await fetchAccount(rpc, await storageHeadAddress(owner));
+  if (!account.exists) return undefined;
+  if (account.programAddress !== STORAGE_PROGRAM_ADDRESS)
     throw new Error("wrong storage head owner");
   return decodeStorageHead(account.data);
 }
 
 export async function fetchStoredRecord(
-  client: SprClient,
+  rpc: StorageRpc,
   record: Address,
 ): Promise<StoredRecord> {
-  const account = await client.getAccount(record);
-  if (account === undefined || account.owner !== STORAGE_PROGRAM_ADDRESS) {
+  const account = await fetchAccount(rpc, record);
+  if (!account.exists || account.programAddress !== STORAGE_PROGRAM_ADDRESS) {
     throw new Error("missing record or wrong storage program owner");
   }
   return decodeStoredRecord(account.data);
@@ -165,12 +179,12 @@ export async function fetchStoredRecord(
  * invalid account state.
  */
 export async function fetchPublishedRecord(
-  client: SprClient,
+  rpc: StorageRpc,
   owner: Address,
 ): Promise<PublishedRecord | undefined> {
-  const head = await fetchStorageHead(client, owner);
+  const head = await fetchStorageHead(rpc, owner);
   if (head === undefined) return undefined;
-  const stored = await fetchStoredRecord(client, head.current);
+  const stored = await fetchStoredRecord(rpc, head.current);
   if (!stored.sealed || stored.owner !== owner) {
     throw new Error(
       "the storage head points to an unpublished or foreign record",

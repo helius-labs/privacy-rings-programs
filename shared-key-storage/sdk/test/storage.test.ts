@@ -25,7 +25,7 @@ import {
   storageHeadAddress,
 } from "../src/storage.js";
 import {
-  accountClient,
+  accountRpc,
   headBytes,
   publish,
   storedBytes,
@@ -213,17 +213,17 @@ describe("versioned storage", () => {
       bytes,
       revision: 7n,
     });
-    const client = accountClient(accounts);
-    assert.deepEqual(await fetchPublishedRecord(client, owner), {
+    const rpc = accountRpc(accounts);
+    assert.deepEqual(await fetchPublishedRecord(rpc, owner), {
       address: current,
       revision: 7n,
       refund,
       bytes,
     });
-    await assert.rejects(fetchStoredRecord(client, previous), /missing record/);
+    await assert.rejects(fetchStoredRecord(rpc, previous), /missing record/);
     accounts.delete(await storageHeadAddress(owner));
-    assert.equal(await fetchStorageHead(client, owner), undefined);
-    assert.equal(await fetchPublishedRecord(client, owner), undefined);
+    assert.equal(await fetchStorageHead(rpc, owner), undefined);
+    assert.equal(await fetchPublishedRecord(rpc, owner), undefined);
   });
 
   it("rejects a head that points to an unpublished or foreign record", async () => {
@@ -238,7 +238,7 @@ describe("versioned storage", () => {
       previous: EMPTY_RECORD_ADDRESS,
       bytes: Uint8Array.of(1),
     });
-    const client = accountClient(accounts);
+    const rpc = accountRpc(accounts);
     for (const data of [
       storedBytes({
         owner,
@@ -256,7 +256,7 @@ describe("versioned storage", () => {
     ]) {
       accounts.set(record, { owner: STORAGE_PROGRAM_ADDRESS, data });
       await assert.rejects(
-        fetchPublishedRecord(client, owner),
+        fetchPublishedRecord(rpc, owner),
         /unpublished or foreign record/,
       );
     }
@@ -305,13 +305,13 @@ describe("versioned storage", () => {
         },
       ],
     ]);
-    const client = accountClient(accounts);
+    const rpc = accountRpc(accounts);
     await assert.rejects(
-      fetchStorageHead(client, owner),
+      fetchStorageHead(rpc, owner),
       /wrong storage head owner/,
     );
     await assert.rejects(
-      fetchStoredRecord(client, record),
+      fetchStoredRecord(rpc, record),
       /wrong storage program owner/,
     );
     assert.throws(

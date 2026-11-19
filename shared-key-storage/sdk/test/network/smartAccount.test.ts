@@ -54,15 +54,15 @@ async function uploadRecord(
 ): Promise<void> {
   t.after(async () => {
     if ((await client.getAccount(upload.address)) === undefined) return;
-    if (!(await fetchStoredRecord(client, upload.address)).sealed) {
+    if (!(await fetchStoredRecord(client.solanaRpc, upload.address)).sealed) {
       await send(client, payer, [upload.closeInstruction]);
     }
   });
-  const previous = await fetchStorageHead(client, owner);
+  const previous = await fetchStorageHead(client.solanaRpc, owner);
   for (const instruction of upload.instructions) {
     await send(client, payer, [instruction]);
     assert.deepEqual(
-      await fetchStorageHead(client, owner),
+      await fetchStorageHead(client.solanaRpc, owner),
       previous,
       "upload leaves the active head unchanged",
     );

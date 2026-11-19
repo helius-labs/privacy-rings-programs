@@ -16,12 +16,12 @@ import {
 } from "@heliuslabs/shared-key-storage";
 import { recordBytes, send, setup, upload } from "./common.js";
 
-const { client, wallet } = await setup();
+const { rpc, wallet } = await setup();
 const bytes = await recordBytes(
   `record 0, created ${new Date().toISOString()}`,
 );
 
-if ((await fetchPublishedRecord(client, wallet.address)) !== undefined) {
+if ((await fetchPublishedRecord(rpc, wallet.address)) !== undefined) {
   throw new Error(
     `${wallet.address} already has a record; run pnpm update-record`,
   );
@@ -35,7 +35,7 @@ const prepared = await prepareRecordUpload({
   bytes,
 });
 console.log(`uploading ${bytes.length} bytes to ${prepared.address}`);
-await upload(client, wallet, prepared.instructions);
+await upload(rpc, wallet, prepared.instructions);
 
 // The owner signs apply, which binds the hash of exactly these bytes.
 const apply = await applyRecordInstruction(
@@ -44,9 +44,9 @@ const apply = await applyRecordInstruction(
   undefined,
   bytes,
 );
-console.log(`applied: ${await send(client, wallet, [apply])}`);
+console.log(`applied: ${await send(rpc, wallet, [apply])}`);
 
-const published = await fetchPublishedRecord(client, wallet.address);
+const published = await fetchPublishedRecord(rpc, wallet.address);
 if (published === undefined) throw new Error("record was not published");
 console.log(`head:     ${await storageHeadAddress(wallet.address)}`);
 console.log(`record:   ${published.address}`);

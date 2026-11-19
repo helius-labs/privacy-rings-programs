@@ -10,17 +10,18 @@
  *
  * Run: pnpm update-record [file]
  */
+import { fetchEncodedAccount } from "@solana/kit";
 import {
   applyRecordInstruction,
   fetchPublishedRecord,
   prepareRecordUpload,
 } from "@heliuslabs/shared-key-storage";
-import { recordBytes, send, setup, upload } from "./common.js";
+import { balance, recordBytes, send, setup, upload } from "./common.js";
 
-const { client, wallet } = await setup();
+const { rpc, wallet } = await setup();
 const bytes = await recordBytes(`record updated ${new Date().toISOString()}`);
 
-const current = await fetchPublishedRecord(client, wallet.address);
+const current = await fetchPublishedRecord(rpc, wallet.address);
 if (current === undefined) {
   throw new Error(`${wallet.address} has no record; run pnpm create-record`);
 }
@@ -34,26 +35,28 @@ const prepared = await prepareRecordUpload({
   bytes,
 });
 console.log(`uploading ${bytes.length} bytes to ${prepared.address}`);
-await upload(client, wallet, prepared.instructions);
+await upload(rpc, wallet, prepared.instructions);
 
-const balanceBefore = await client.getBalance(current.refund);
+const balanceBefore = await balance(rpc, current.refund);
 const apply = await applyRecordInstruction(
   wallet.address,
   prepared.address,
   current,
   bytes,
 );
-console.log(`applied: ${await send(client, wallet, [apply])}`);
+console.log(`applied: ${await send(rpc, wallet, [apply])}`);
 
-const published = await fetchPublishedRecord(client, wallet.address);
+const published = await fetchPublishedRecord(rpc, wallet.address);
 if (published === undefined) throw new Error("record was not published");
 console.log(`record:   ${published.address}`);
 console.log(`revision: ${published.revision}`);
 console.log(`content:  ${new TextDecoder().decode(published.bytes)}`);
-const closed = (await client.getAccount(current.address)) === undefined;
-console.log(`old record closed: ${closed}`);
+const old = await fetchEncodedAccount(rpc, current.address, {
+  commitment: "confirmed",
+});
+console.log(`old record closed: ${!old.exists}`);
 // The wallet also paid the fee, so this is the refund minus that fee.
-const change = (await client.getBalance(current.refund)) - balanceBefore;
+const change = (await balance(rpc, current.refund)) - balanceBefore;
 console.log(
   `refund destination ${current.refund} changed by ${change} lamports`,
 );

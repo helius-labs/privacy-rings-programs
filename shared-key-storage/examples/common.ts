@@ -1,11 +1,13 @@
 /** Connection, keypair and transaction helpers shared by the examples. */
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
+import { setTimeout as sleep } from "node:timers/promises";
 
 import {
   appendTransactionMessageInstructions,
   assertIsTransactionWithBlockhashLifetime,
   createKeyPairSignerFromBytes,
+  createSolanaRpc,
   createTransactionMessage,
   getSignatureFromTransaction,
   pipe,
@@ -13,12 +15,15 @@ import {
   setTransactionMessageFeePayerSigner,
   setTransactionMessageLifetimeUsingBlockhash,
   signTransactionMessageWithSigners,
+  type Address,
   type Instruction,
   type KeyPairSigner,
+  type Rpc,
   type Signature,
+  type SolanaRpcApi,
 } from "@solana/kit";
-import { createSprClient } from "@heliuslabs/spr";
-import type { SprClient } from "@heliuslabs/spr/client";
+
+type SolanaRpc = Rpc<SolanaRpcApi>;
 
 /**
  * Connects to `SOLANA_RPC_URL` and loads the wallet at `PAYER_KEYPAIR`
@@ -26,15 +31,15 @@ import type { SprClient } from "@heliuslabs/spr/client";
  * rent and signs every transaction.
  */
 export async function setup(): Promise<
-  Readonly<{ client: SprClient; wallet: KeyPairSigner }>
+  Readonly<{ rpc: SolanaRpc; wallet: KeyPairSigner }>
 > {
   const rpcUrl = process.env["SOLANA_RPC_URL"]?.trim();
   if (!rpcUrl) throw new Error("set SOLANA_RPC_URL, e.g. a devnet RPC URL");
-  const client = await createSprClient({ solanaRpcUrl: rpcUrl });
+  const rpc = createSolanaRpc(rpcUrl);
   const wallet = await loadKeypair(
     process.env["PAYER_KEYPAIR"]?.trim() || "~/.config/solana/id.json",
   );
-  return { client, wallet };
+  return { rpc, wallet };
 }
 
 async function loadKeypair(path: string): Promise<KeyPairSigner> {
@@ -67,13 +72,11 @@ export async function recordBytes(sample: string): Promise<Uint8Array> {
 
 /** Signs with every signer the instructions name and waits for confirmation. */
 export async function send(
-  client: SprClient,
+  rpc: SolanaRpc,
   feePayer: KeyPairSigner,
   instructions: readonly Instruction[],
 ): Promise<Signature> {
-  const { value: lifetime } = await client.solanaRpc
-    .getLatestBlockhash()
-    .send();
+  const { value: lifetime } = await rpc.getLatestBlockhash().send();
   const signed = await signTransactionMessageWithSigners(
     pipe(
       createTransactionMessage({ version: 0 }),
@@ -84,23 +87,63 @@ export async function send(
     ),
   );
   assertIsTransactionWithBlockhashLifetime(signed);
-  await sendTransactionWithoutConfirmingFactory({ rpc: client.solanaRpc })(
-    signed,
-    { commitment: "confirmed" },
-  );
+  await sendTransactionWithoutConfirmingFactory({ rpc })(signed, {
+    commitment: "confirmed",
+  });
   const signature = getSignatureFromTransaction(signed);
-  await client.confirmTransaction(signature);
+  await confirm(rpc, signature, lifetime.lastValidBlockHeight);
   return signature;
+}
+
+/**
+ * Polls the signature until it is confirmed, it fails, or its blockhash
+ * expires.
+ */
+async function confirm(
+  rpc: SolanaRpc,
+  signature: Signature,
+  lastValidBlockHeight: bigint,
+): Promise<void> {
+  for (;;) {
+    const {
+      value: [status],
+    } = await rpc.getSignatureStatuses([signature]).send();
+    if (status?.err) {
+      throw new Error(`${signature} failed: ${JSON.stringify(status.err)}`);
+    }
+    if (
+      status?.confirmationStatus === "confirmed" ||
+      status?.confirmationStatus === "finalized"
+    ) {
+      return;
+    }
+    const height = await rpc.getBlockHeight({ commitment: "confirmed" }).send();
+    if (height > lastValidBlockHeight) {
+      throw new Error(`${signature} expired before confirmation`);
+    }
+    await sleep(500);
+  }
 }
 
 /** Sends each upload chunk in its own transaction, in order. */
 export async function upload(
-  client: SprClient,
+  rpc: SolanaRpc,
   wallet: KeyPairSigner,
   instructions: readonly Instruction[],
 ): Promise<void> {
   for (const [index, instruction] of instructions.entries()) {
-    const signature = await send(client, wallet, [instruction]);
+    const signature = await send(rpc, wallet, [instruction]);
     console.log(`  chunk ${index + 1}/${instructions.length}: ${signature}`);
   }
+}
+
+/** The account's lamports at `confirmed`. */
+export async function balance(
+  rpc: SolanaRpc,
+  account: Address,
+): Promise<bigint> {
+  const { value } = await rpc
+    .getBalance(account, { commitment: "confirmed" })
+    .send();
+  return value;
 }

@@ -6,6 +6,7 @@ import {
   STORAGE_PROGRAM_ADDRESS,
   storageDataHash,
   storageHeadAddress,
+  type StorageRpc,
 } from "../src/storage.js";
 
 export type FakeAccounts = Map<Address, { owner: Address; data: Uint8Array }>;
@@ -47,11 +48,36 @@ export function headBytes(current: Address, revision = 1n): Uint8Array {
     .finish();
 }
 
-/** A client whose `getAccount` reads from `accounts`. */
-export function accountClient(accounts: FakeAccounts): SprClient {
+/** An RPC whose `getAccountInfo` reads from `accounts`. */
+export function accountRpc(accounts: FakeAccounts): StorageRpc {
   return {
-    getAccount: async (address: Address) => accounts.get(address),
-  } as unknown as SprClient;
+    getAccountInfo: (address: Address) => ({
+      send: async () => {
+        const account = accounts.get(address);
+        return {
+          context: { slot: 0n },
+          value:
+            account === undefined
+              ? null
+              : {
+                  data: [
+                    Buffer.from(account.data).toString("base64"),
+                    "base64",
+                  ],
+                  executable: false,
+                  lamports: 1n,
+                  owner: account.owner,
+                  space: BigInt(account.data.length),
+                },
+        };
+      },
+    }),
+  } as unknown as StorageRpc;
+}
+
+/** A client whose Solana RPC reads from `accounts`. */
+export function accountClient(accounts: FakeAccounts): SprClient {
+  return { solanaRpc: accountRpc(accounts) } as unknown as SprClient;
 }
 
 /** Adds `owner`'s head and the sealed record it points to. */
