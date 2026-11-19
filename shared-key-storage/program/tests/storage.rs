@@ -1,3 +1,6 @@
+mod common;
+
+use common::{add_program, program_svm, system_account, SYSTEM};
 use mollusk_svm::{
     result::{types::TransactionProgramResult, ProgramResult},
     Mollusk,
@@ -8,14 +11,9 @@ use solana_instruction::{AccountMeta, Instruction};
 use solana_program_error::ProgramError;
 use solana_sha256_hasher::hashv;
 use storage::{
-    state::{
-        decode_head, encode_head, BufferHeader, Head, BUFFER_HEADER_LEN, CHUNK_LEN, HEAD_LEN,
-        HEAD_PDA_SEED, MAX_RECORD_LEN,
-    },
+    state::{BufferHeader, Head, CHUNK_LEN, HEAD_PDA_SEED, MAX_RECORD_LEN},
     StorageError, APPLY, CLOSE, STORE,
 };
-
-const SYSTEM: Address = Address::new_from_array([0; 32]);
 
 struct Fixture {
     svm: Mollusk,
@@ -31,22 +29,12 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
-        let program = Address::new_from_array([11; 32]);
+        let program = storage::ID;
         let owner = Address::new_from_array([12; 32]);
         let payer = Address::new_from_array([13; 32]);
         let buffer = Address::new_from_array([14; 32]);
         let (head, _) = Address::find_program_address(&[HEAD_PDA_SEED, owner.as_ref()], &program);
-        let mut svm = Mollusk::default();
-        let executable = std::fs::read(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/target/deploy/storage.so"
-        ))
-        .expect("build the SBF program before running integration tests");
-        svm.add_program_with_loader_and_elf(
-            &program,
-            &mollusk_svm::program::loader_keys::LOADER_V3,
-            &executable,
-        );
+        let svm = program_svm();
         let accounts = vec![
             (owner, system_account(1_000_000)),
             (payer, system_account(1_000_000_000)),
@@ -116,7 +104,9 @@ impl Fixture {
         let revision = if self.account(self.head).data.is_empty() {
             0
         } else {
-            decode_head(&self.account(self.head).data).unwrap().revision
+            Head::read_from(&self.account(self.head).data)
+                .unwrap()
+                .revision()
         };
         let mut instruction_data = vec![APPLY];
         instruction_data.extend_from_slice(previous.as_ref());
@@ -128,7 +118,7 @@ impl Fixture {
                 AccountMeta::new_readonly(SYSTEM, false),
             )
         } else {
-            let refund = BufferHeader::decode(&self.account(previous).data)
+            let refund = BufferHeader::read_from(&self.account(previous).data)
                 .expect("published predecessor")
                 .refund;
             (
@@ -153,7 +143,7 @@ impl Fixture {
 
     /// Cancel of the current buffer, refunding its recorded destination.
     fn close(&self) -> Instruction {
-        let refund = BufferHeader::decode(&self.account(self.buffer).data)
+        let refund = BufferHeader::read_from(&self.account(self.buffer).data)
             .map_or(self.refund, |header| header.refund);
         Instruction {
             program_id: self.program,
@@ -199,14 +189,7 @@ impl Fixture {
     }
 
     fn header(&self) -> BufferHeader {
-        BufferHeader::decode(&self.account(self.buffer).data).unwrap()
-    }
-}
-
-fn system_account(lamports: u64) -> Account {
-    Account {
-        lamports,
-        ..Account::default()
+        BufferHeader::read_from(&self.account(self.buffer).data).unwrap()
     }
 }
 
@@ -247,13 +230,14 @@ fn chunked_growth_preserves_the_active_record_until_atomic_replacement() {
     assert_eq!(
         pending_header,
         BufferHeader {
-            sealed: false,
-            owner: fixture.owner,
-            payer: fixture.payer,
-            refund: fixture.payer,
-            previous: first_address,
-            total_length: next_bytes.len() as u32,
             data_hash: next_hash,
+            ..BufferHeader::new(
+                fixture.owner,
+                fixture.payer,
+                fixture.payer,
+                first_address,
+                next_bytes.len() as u32,
+            )
         },
     );
     let payer_balance = fixture.account(fixture.payer).lamports;
@@ -262,23 +246,20 @@ fn chunked_growth_preserves_the_active_record_until_atomic_replacement() {
     let closed_first = system_account(0);
     assert_eq!(
         (
-            decode_head(&fixture.account(fixture.head).data).unwrap(),
+            Head::read_from(&fixture.account(fixture.head).data).unwrap(),
             fixture.header(),
             fixture
                 .account(fixture.buffer)
                 .data
-                .get(BUFFER_HEADER_LEN..)
+                .get(BufferHeader::LEN..)
                 .unwrap(),
             fixture.account(first_address),
             fixture.account(fixture.payer).lamports,
         ),
         (
-            Head {
-                current: fixture.buffer,
-                revision: 2
-            },
+            Head::new(fixture.buffer, 2),
             BufferHeader {
-                sealed: true,
+                sealed: 1,
                 ..pending_header
             },
             next_bytes.as_slice(),
@@ -287,7 +268,7 @@ fn chunked_growth_preserves_the_active_record_until_atomic_replacement() {
         ),
         "publication must seal the replacement and close only its predecessor",
     );
-    assert_eq!(fixture.account(fixture.head).data.len(), HEAD_LEN);
+    assert_eq!(fixture.account(fixture.head).data.len(), Head::LEN);
 }
 
 #[test]
@@ -297,7 +278,7 @@ fn prefunded_buffer_and_head_cannot_block_initialization() {
     fixture.account_mut(fixture.head).lamports = 1_000_000;
     let data_hash = fixture.upload(SYSTEM, b"record");
     fixture.succeed(fixture.apply(data_hash));
-    assert!(fixture.header().sealed);
+    assert!(fixture.header().is_sealed());
 }
 
 #[test]
@@ -308,7 +289,7 @@ fn the_vault_pays_head_rent_and_the_uploader_gets_the_refund() {
     let mut instruction = fixture.apply(data_hash);
     instruction.accounts.get_mut(3).unwrap().pubkey = fixture.owner;
     fixture.succeed(instruction);
-    assert!(fixture.header().sealed);
+    assert!(fixture.header().is_sealed());
     let first = fixture.next_buffer();
     let next_hash = fixture.upload(first, b"replacement");
     let owner_balance = fixture.account(fixture.owner).lamports;
@@ -418,7 +399,7 @@ fn foreign_buffer_owners_and_discriminators_are_rejected() {
         ProgramError::InvalidAccountData,
     );
     fixture.account_mut(fixture.buffer).owner = fixture.program;
-    fixture.account_mut(fixture.buffer).data = vec![0; BUFFER_HEADER_LEN];
+    fixture.account_mut(fixture.buffer).data = vec![0; BufferHeader::LEN];
     fixture.reject(
         fixture.store(SYSTEM, 3, 0, b"abc"),
         ProgramError::InvalidAccountData,
@@ -552,9 +533,9 @@ fn reusing_a_superseded_address_cannot_revive_a_stale_approval() {
     assert_eq!(fixture.upload(intervening, b"original"), original_hash);
     fixture.succeed(fixture.apply(original_hash));
     assert_eq!(
-        decode_head(&fixture.account(fixture.head).data)
+        Head::read_from(&fixture.account(fixture.head).data)
             .unwrap()
-            .revision,
+            .revision(),
         3
     );
     fixture.buffer = stale;
@@ -606,14 +587,18 @@ fn replacement_rejects_a_foreign_or_unsealed_predecessor() {
     fixture.account_mut(first).owner = fixture.owner;
     fixture.reject(fixture.apply(next_hash), ProgramError::IllegalOwner);
     *fixture.account_mut(first) = original.clone();
-    let mut header = BufferHeader::decode(&original.data).unwrap();
+    let mut header = BufferHeader::read_from(&original.data).unwrap();
     header.owner = Address::new_from_array([99; 32]);
-    header.encode(&mut fixture.account_mut(first).data).unwrap();
+    header
+        .write_to(&mut fixture.account_mut(first).data)
+        .unwrap();
     fixture.reject(fixture.apply(next_hash), ProgramError::IllegalOwner);
     *fixture.account_mut(first) = original;
-    let mut header = BufferHeader::decode(&fixture.account(first).data).unwrap();
-    header.sealed = false;
-    header.encode(&mut fixture.account_mut(first).data).unwrap();
+    let mut header = BufferHeader::read_from(&fixture.account(first).data).unwrap();
+    header.sealed = 0;
+    header
+        .write_to(&mut fixture.account_mut(first).data)
+        .unwrap();
     fixture.reject(fixture.apply(next_hash), ProgramError::InvalidAccountData);
 }
 
@@ -624,12 +609,9 @@ fn revision_overflow_cannot_close_the_active_record() {
     fixture.succeed(fixture.apply(first_hash));
     let first = fixture.next_buffer();
     let next_hash = fixture.upload(first, b"next");
-    encode_head(
-        &mut fixture.account_mut(fixture.head).data,
-        &first,
-        u64::MAX,
-    )
-    .unwrap();
+    Head::new(first, u64::MAX)
+        .write_to(&mut fixture.account_mut(fixture.head).data)
+        .unwrap();
     fixture.reject(fixture.apply(next_hash), ProgramError::ArithmeticOverflow);
 }
 
@@ -812,6 +794,16 @@ fn malformed_instructions_fail_without_account_changes() {
 }
 
 #[test]
+fn the_binary_only_runs_at_its_declared_address() {
+    let mut fixture = Fixture::new();
+    let elsewhere = Address::new_unique();
+    add_program(&mut fixture.svm, &elsewhere);
+    let mut instruction = fixture.store(SYSTEM, 3, 0, b"abc");
+    instruction.program_id = elsewhere;
+    fixture.reject(instruction, ProgramError::IncorrectProgramId);
+}
+
+#[test]
 fn apply_rolls_back_if_a_later_instruction_fails() {
     let mut fixture = Fixture::new();
     let first_hash = fixture.upload(SYSTEM, b"first");
@@ -839,5 +831,5 @@ fn apply_rolls_back_if_a_later_instruction_fails() {
         "both publication and sealing must roll back"
     );
     fixture.succeed(fixture.apply(next_hash));
-    assert!(fixture.header().sealed);
+    assert!(fixture.header().is_sealed());
 }

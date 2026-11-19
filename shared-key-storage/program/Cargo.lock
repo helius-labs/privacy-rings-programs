@@ -1670,6 +1670,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "pinocchio-system"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f3ae2ee67b42e2ac797dd88312da473c895660e270d8093e0ba2749b885b5778"
+dependencies = [
+ "pinocchio",
+ "solana-address 2.9.0",
+]
+
+[[package]]
 name = "pkcs8"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3126,11 +3136,15 @@ version = "0.1.0"
 dependencies = [
  "mollusk-svm",
  "pinocchio",
+ "pinocchio-system",
  "solana-account",
  "solana-address 2.9.0",
  "solana-instruction",
+ "solana-msg",
  "solana-program-error",
  "solana-sha256-hasher",
+ "thiserror 2.0.21",
+ "wincode",
 ]
 
 [[package]]
