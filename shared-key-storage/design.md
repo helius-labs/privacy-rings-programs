@@ -84,15 +84,9 @@ A key record is `177 + 97 · N + 65 · H` bytes for N signers and H old viewing 
 
 ## Limitations
 
-1. No check of the ciphertexts.
-2. Reading published records requires an RPC that serves their account state.
-3. An incomplete or abandoned upload locks rent until its rent payer cancels it, refunding the chosen destination.
-4. Nothing enforces the rotate flow.
-5. The nullifier key doesn't rotate.
-6. A removed signer keeps the old shared viewing secret and the nullifier secret.
-7. The creator learns both secrets.
-8. A signer's own key update isn't picked up.
-9. Membership is public.
-10. All transactions are sync.
-11. The signer count is capped.
-12. Every current signer, including newly added signers, can view all earlier balances. Removed signers retain access to the history they already received.
+1. Nothing checks the ciphertexts. Each approver checks only its own entry, so a bad record can lock other signers out.
+2. Nothing enforces the rotate flow. Changing the Squads signers without publishing a new record leaves added signers without the key and removed signers with it.
+3. Removed signers keep the viewing secrets they received and the nullifier secret, which never rotates.
+4. Added signers receive the full key history and can view every earlier balance.
+5. Membership is public: the signers are listed in the Squads settings.
+6. A signer's new registry viewing key takes effect only at the next rotation.
