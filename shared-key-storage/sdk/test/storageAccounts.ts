@@ -78,9 +78,7 @@ export async function publish(
   input: Readonly<{
     owner: Address;
     record: Address;
-    refund: Address;
     bytes: Uint8Array;
-    revision?: bigint;
   }>,
 ): Promise<void> {
   upload(accounts, input);
@@ -90,9 +88,7 @@ export async function publish(
       input.owner,
       encodeStoragePointer({
         current: input.record,
-        revision: input.revision ?? 1n,
         dataHash: storageDataHash(input.bytes),
-        refund: input.refund,
       }),
     ),
   });

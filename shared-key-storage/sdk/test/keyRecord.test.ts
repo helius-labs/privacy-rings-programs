@@ -60,7 +60,6 @@ async function approve(
     await publish(accounts, {
       owner: vault,
       record: await settingsAddress(),
-      refund: vault,
       bytes: encodeKeyRecord(published),
     });
   }
@@ -436,8 +435,6 @@ describe("key record", () => {
     const signers = [a, c].map(({ address }) => address);
     const current = {
       address: await settingsAddress(),
-      revision: 2n,
-      refund: await settingsAddress(),
       record: second,
     };
     const registry: VaultRegistry = {

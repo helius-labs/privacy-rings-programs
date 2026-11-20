@@ -4,8 +4,8 @@
  * 1. Upload: create a Record account, write the bytes in chunks, then hand
  *    its authority to the wallet, which freezes the bytes.
  * 2. Publish: create the wallet's pointer at
- *    `createWithSeed(wallet, "key-record-pointer", Record)` and point it at
- *    the record with revision 1 and the record's hash.
+ *    `createWithSeed(wallet, "key-record-pointer", Record)` and write the
+ *    record's address and hash into it.
  *
  * Run: pnpm create-record [file]
  */
@@ -40,9 +40,9 @@ await upload(rpc, wallet, prepared.transactions);
 // The owner checks the frozen upload, then publishes it. No predecessor:
 // this is the first record for this owner.
 await checkUploadedRecord(rpc, wallet.address, prepared.address, bytes);
-const publish = await publishRecordInstructions(rpc, {
+const publish = await publishRecordInstructions({
   owner: wallet.address,
-  upload: prepared,
+  upload: prepared.address,
   predecessor: undefined,
   bytes,
 });
@@ -52,5 +52,4 @@ const published = await fetchPublishedRecord(rpc, wallet.address);
 if (published === undefined) throw new Error("record was not published");
 console.log(`pointer:  ${await storagePointerAddress(wallet.address)}`);
 console.log(`record:   ${published.address}`);
-console.log(`revision: ${published.revision}`);
 console.log(`content:  ${new TextDecoder().decode(published.bytes)}`);

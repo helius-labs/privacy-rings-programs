@@ -1,7 +1,8 @@
 /**
  * Key records uploaded in chunks and published by the vault.
  * Publication and user-registry changes run in the same Squads transaction.
- * Superseded records are closed; the latest record contains all old viewing keys.
+ * Replaced records are closed and their rent goes to the vault; the latest
+ * record contains all old viewing keys.
  */
 import {
   AccountRole,
@@ -25,16 +26,15 @@ import {
 import {
   fetchPublishedRecord,
   prepareRecordUpload,
-  publishRecordInstructions,
-  type Predecessor,
   type RecordUpload,
-  type StorageRpc,
 } from "./storage.js";
 
 const UPDATE_KEYS = 2;
 
 /** The vault's published key record, which the next publication replaces and closes. */
-export interface KeyRecordPublication extends Predecessor {
+export interface KeyRecordPublication {
+  /** The Record account holding the key record. */
+  readonly address: Address;
   readonly record: KeyRecord;
 }
 
@@ -53,8 +53,10 @@ export async function fetchPublishedKeyRecord(
 ): Promise<KeyRecordPublication | undefined> {
   const published = await fetchPublishedRecord(client.solanaRpc, vault);
   if (published === undefined) return undefined;
-  const { bytes, ...predecessor } = published;
-  return { ...predecessor, record: decodeKeyRecord(bytes) };
+  return {
+    address: published.address,
+    record: decodeKeyRecord(published.bytes),
+  };
 }
 
 /** The registered viewing key and current published record, if registered. */
@@ -101,15 +103,14 @@ export function currentKeyRecord(
 
 /**
  * Prepare upload transactions; send each before submitting register or
- * rotate. `payer` funds the upload; `refund`, the payer by default, gets the
- * rent back when a later rotation closes it, or when the payer sends
- * `closeInstruction` before the upload's last transaction.
+ * rotate. `payer` funds the upload and gets the rent back only by sending
+ * `closeInstruction` before the upload's last transaction; when a later
+ * rotation closes the record, its rent goes to the vault.
  */
 export function prepareKeyRecordUpload(
   input: Readonly<{
     owner: Address;
     payer: TransactionSigner;
-    refund?: Address;
     record: KeyRecord;
   }>,
 ): Promise<RecordUpload> {
@@ -155,26 +156,4 @@ export async function updateKeysInstruction(
     ],
     data: new ByteWriter().u8(UPDATE_KEYS).bytes(viewingPublicKey).finish(),
   };
-}
-
-/**
- * The vault's publication of the uploaded record: points the vault's storage
- * pointer at it and closes `predecessor`, undefined for the first record.
- * It does not read the upload: approvers run `checkOwnEntry` (or
- * `checkUploadedRecord`) to confirm it holds exactly `record` and is frozen
- * under the vault.
- */
-export function publishKeyRecordInstructions(
-  rpc: StorageRpc,
-  owner: Address,
-  upload: Pick<RecordUpload, "address" | "refund">,
-  predecessor: Predecessor | undefined,
-  record: KeyRecord,
-): Promise<Instruction[]> {
-  return publishRecordInstructions(rpc, {
-    owner,
-    upload,
-    predecessor,
-    bytes: encodeKeyRecord(record),
-  });
 }

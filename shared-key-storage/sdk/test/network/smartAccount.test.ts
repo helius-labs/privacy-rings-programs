@@ -30,7 +30,8 @@ import {
   type RecordUpload,
 } from "../../src/storage.js";
 import {
-  checkOwnEntry,
+  checkRegistration,
+  checkRotation,
   createSmartAccount,
   fetchSettings,
   memberFromKeypair,
@@ -173,24 +174,14 @@ async function vaultRegistry(client: SprClient, vault: Address) {
   return registry;
 }
 
-/**
- * The registry state after `upload` of `record` became the vault's current record; the
- * upload's payer is its default refund destination.
- */
+/** The registry state after `upload` of `record` became the vault's current record. */
 function publishedRegistry(
   record: KeyRecord,
   upload: RecordUpload,
-  revision: bigint,
-  payer: TransactionSigner,
 ): VaultRegistry {
   return {
     viewingPublicKey: record.sharedViewingPublicKey,
-    current: {
-      address: upload.address,
-      revision,
-      refund: payer.address,
-      record,
-    },
+    current: { address: upload.address, record },
   };
 }
 
@@ -237,36 +228,38 @@ test(
       [alice.signer.address, bob.signer.address].sort(),
     );
 
-    // Upload, check, then Register: each approver checks the frozen upload
-    // and opens its entry of record 0; the vault registers the keys and
-    // points its storage pointer at the record.
+    // Upload, check, then Register: each approver checks the frozen upload,
+    // opens its entry of record 0 and checks the Register instruction it is
+    // asked to sign; the vault registers the keys and points its storage
+    // pointer at the record.
     const firstUpload = await prepareKeyRecordUpload({
       owner: created.vault,
       payer,
       record: created.record,
     });
     await uploadRecord(client, payer, created.vault, firstUpload, t);
+    const register = await registerVaultInstruction({
+      client,
+      settings: created.settings,
+      approvers: [alice.signer, bob.signer],
+      record: created.record,
+      upload: firstUpload.address,
+    });
     for (const approver of [alice, bob]) {
-      await checkOwnEntry({
+      await checkRegistration({
         client,
         settings: created.settings,
         record: created.record,
         upload: firstUpload.address,
         member: approver,
+        approvers: [alice.signer.address, bob.signer.address],
+        proposed: [register],
       });
     }
-    await send(client, payer, [
-      await registerVaultInstruction({
-        client,
-        settings: created.settings,
-        approvers: [alice.signer, bob.signer],
-        record: created.record,
-        upload: firstUpload,
-      }),
-    ]);
+    await send(client, payer, [register]);
     assert.deepEqual(
       await vaultRegistry(client, created.vault),
-      publishedRegistry(created.record, firstUpload, 1n, payer),
+      publishedRegistry(created.record, firstUpload),
     );
     const bobKeys = await recoverVaultKeys({
       client,
@@ -334,17 +327,34 @@ test(
       threshold: 2,
     });
     assert.equal(rotation.record.epoch, 1n);
-    // Approve: Alice stays a signer, so she checks the upload and her entry
-    // before signing.
+    // Approve: both approvers check the upload and the instructions they
+    // are asked to sign. Alice stays a signer, so she also opens her entry;
+    // Bob is removed and has none.
     await uploadRecord(client, payer, created.vault, rotation.upload, t);
-    await checkOwnEntry({
-      client,
-      settings: created.settings,
-      record: rotation.record,
-      upload: rotation.upload.address,
-      member: alice,
-    });
+    for (const approver of [alice, bob]) {
+      await checkRotation({
+        client,
+        settings: created.settings,
+        record: rotation.record,
+        upload: rotation.upload.address,
+        member: approver,
+        approvers: [alice.signer.address, bob.signer.address],
+        rentPayer: alice.signer.address,
+        keep: [alice.signer.address],
+        add: [{ key: carol.signer.address, permissions: Permission.All }],
+        threshold: 2,
+        proposed: rotation.instructions,
+      });
+    }
+    // The rotation closes record 0 and its rent goes to the vault.
+    const firstRent = await client.getBalance(firstUpload.address);
+    const vaultBefore = await client.getBalance(created.vault);
+    assert(firstRent > 0n);
     await send(client, payer, rotation.instructions);
+    assert.equal(
+      await client.getBalance(created.vault),
+      vaultBefore + firstRent,
+    );
     const rotated = await fetchSettings(client, created.settings);
     assert.deepEqual(
       rotated.signers.map((signer) => signer.key).sort(),
@@ -352,7 +362,7 @@ test(
     );
     assert.deepEqual(
       await vaultRegistry(client, created.vault),
-      publishedRegistry(rotation.record, rotation.upload, 2n, payer),
+      publishedRegistry(rotation.record, rotation.upload),
     );
     assert.deepEqual(
       rotation.record.nullifierPublicKey,
@@ -451,17 +461,23 @@ test(
     });
     assert.equal(keyOnly.instructions.length, 1);
     await uploadRecord(client, payer, created.vault, keyOnly.upload, t);
-    await checkOwnEntry({
+    await checkRotation({
       client,
       settings: created.settings,
       record: keyOnly.record,
       upload: keyOnly.upload.address,
       member: alice,
+      approvers: [alice.signer.address, carol.signer.address],
+      rentPayer: carol.signer.address,
+      keep: [alice.signer.address, carol.signer.address],
+      add: [],
+      threshold: 2,
+      proposed: keyOnly.instructions,
     });
     await send(client, payer, keyOnly.instructions);
     assert.deepEqual(
       await vaultRegistry(client, created.vault),
-      publishedRegistry(keyOnly.record, keyOnly.upload, 3n, payer),
+      publishedRegistry(keyOnly.record, keyOnly.upload),
     );
     assert.equal(await client.getAccount(firstUpload.address), undefined);
     assert.equal(await client.getAccount(rotation.upload.address), undefined);
@@ -522,7 +538,7 @@ test(
       settings: created.settings,
       approvers: [alice.signer, bob.signer],
       record: created.record,
-      upload: firstUpload,
+      upload: firstUpload.address,
     });
     await send(client, payer, [register]);
 
@@ -553,7 +569,7 @@ test(
     );
     assert.deepEqual(
       await vaultRegistry(client, created.vault),
-      publishedRegistry(rotation.record, rotation.upload, 2n, payer),
+      publishedRegistry(rotation.record, rotation.upload),
     );
   },
 );

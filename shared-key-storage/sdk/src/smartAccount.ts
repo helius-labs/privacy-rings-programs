@@ -3,10 +3,11 @@
  * builders. The vault (Squads smart account at index 0) owns the shielded
  * UTXOs; Squads signs for it in `executeTransactionSyncV2`. The current key
  * record is published through the vault's storage pointer and contains all old
- * viewing keys. Superseded accounts are closed. No proof checks a key
- * record.
+ * viewing keys. Replaced record accounts are closed and their rent goes to the
+ * vault. No proof checks a key record.
  */
 import {
+  createNoopSigner,
   type Address,
   type Instruction,
   type TransactionSigner,
@@ -29,6 +30,7 @@ import {
 } from "@heliuslabs/spr/transaction";
 import { fetchUserRecord } from "@heliuslabs/spr/wallet";
 
+import { bytesEqual } from "./bytes.js";
 import {
   buildKeyRecord,
   checkKeyHistory,
@@ -48,11 +50,14 @@ import {
   fetchVaultRegistry,
   registerVaultKeysInstruction,
   prepareKeyRecordUpload,
-  publishKeyRecordInstructions,
   updateKeysInstruction,
   type KeyRecordPublication,
 } from "./registry.js";
-import { checkUploadedRecord, type RecordUpload } from "./storage.js";
+import {
+  checkUploadedRecord,
+  publishRecordInstructions,
+  type RecordUpload,
+} from "./storage.js";
 import {
   checkSyncConsensus,
   createSmartAccountInstruction,
@@ -186,25 +191,21 @@ function destroySecrets(secrets: SharedSecrets): void {
 }
 
 /**
- * For an approver that stays or becomes a signer, before it co-signs a
- * Register or Rotate: checks that the upload at `upload` is frozen under the
- * vault and holds exactly `record`, and that its own entry in the record
- * opens to keys matching the record, including every old viewing key. The
- * previous record comes from the vault's storage pointer, the same record the
- * publication closes, never from the rotator. Before Register there is none,
- * so `record` must be epoch 0. Throws on a mismatched upload, a bad
- * ciphertext, a missing key or a broken history.
+ * Checks a proposed key record against the vault's accounts: the upload at
+ * `upload` is frozen under the vault and holds exactly `record`, and `record`
+ * extends the vault's published record, read through the vault's storage
+ * pointer. Before Register there is none, so `record` must be epoch 0.
+ * Returns the published record.
  */
-export async function checkOwnEntry(
+async function checkProposedKeyRecord(
   input: Readonly<{
     client: SprClient;
     settings: Address;
     record: KeyRecord;
     upload: Address;
-    member: Member;
   }>,
-): Promise<void> {
-  const { record, member } = input;
+): Promise<KeyRecordPublication | undefined> {
+  const { record } = input;
   if (record.settings !== input.settings) {
     throw new Error(`the key record belongs to ${record.settings}`);
   }
@@ -215,8 +216,16 @@ export async function checkOwnEntry(
     input.upload,
     encodeKeyRecord(record),
   );
-  const previous = await fetchPublishedKeyRecord(input.client, vault);
-  checkKeyHistory(record, previous?.record);
+  const published = await fetchPublishedKeyRecord(input.client, vault);
+  checkKeyHistory(record, published?.record);
+  return published;
+}
+
+/**
+ * Checks that `member`'s entry in `record` opens to keys matching the record,
+ * including every old viewing key.
+ */
+function checkEntryOpens(record: KeyRecord, member: Member): void {
   const secrets = recoverSharedSecrets(
     record,
     member.signer.address,
@@ -229,6 +238,175 @@ export async function checkOwnEntry(
   } finally {
     destroySecrets(secrets);
   }
+}
+
+/**
+ * For an approver that stays or becomes a signer, before it co-signs a
+ * Register or Rotate: checks that the upload at `upload` is frozen under the
+ * vault and holds exactly `record`, and that its own entry in the record
+ * opens to keys matching the record, including every old viewing key. The
+ * previous record comes from the vault's storage pointer, the same record the
+ * publication closes, never from the rotator. Before Register there is none,
+ * so `record` must be epoch 0. Throws on a mismatched upload, a bad
+ * ciphertext, a missing key or a broken history.
+ *
+ * This checks the record, not the transaction that publishes it; use
+ * `checkRegistration` or `checkRotation` to check both.
+ */
+export async function checkOwnEntry(
+  input: Readonly<{
+    client: SprClient;
+    settings: Address;
+    record: KeyRecord;
+    upload: Address;
+    member: Member;
+  }>,
+): Promise<void> {
+  await checkProposedKeyRecord(input);
+  checkEntryOpens(input.record, input.member);
+}
+
+/**
+ * Throws unless `proposed` holds exactly the `expected` instructions, in
+ * order: the same programs, accounts, account roles and data. Both lists are
+ * instructions as built. Instructions decompiled from a transaction message
+ * have their account roles merged across the transaction and may not match.
+ */
+export function checkInstructionsMatch(
+  expected: readonly Instruction[],
+  proposed: readonly Instruction[],
+): void {
+  if (expected.length !== proposed.length) {
+    throw new Error(
+      `expected ${expected.length} instructions, got ${proposed.length}`,
+    );
+  }
+  expected.forEach((instruction, index) => {
+    const proposedInstruction = proposed.at(index);
+    const accounts = instruction.accounts ?? [];
+    const proposedAccounts = proposedInstruction?.accounts ?? [];
+    if (
+      proposedInstruction === undefined ||
+      proposedInstruction.programAddress !== instruction.programAddress ||
+      proposedAccounts.length !== accounts.length ||
+      accounts.some(
+        (account, position) =>
+          account.address !== proposedAccounts.at(position)?.address ||
+          account.role !== proposedAccounts.at(position)?.role,
+      ) ||
+      !bytesEqual(
+        instruction.data ?? new Uint8Array(),
+        proposedInstruction.data ?? new Uint8Array(),
+      )
+    ) {
+      throw new Error(`instruction ${index} is not the expected instruction`);
+    }
+  });
+}
+
+/**
+ * For an approver, before it co-signs a Register: runs `checkOwnEntry`, then
+ * builds the Register instruction itself and checks that `proposed` is
+ * exactly that. `proposed` must hold every instruction of the transaction the
+ * approver signs, as the proposer built them; an instruction left out is not
+ * checked.
+ */
+export async function checkRegistration(
+  input: Readonly<{
+    client: SprClient;
+    settings: Address;
+    record: KeyRecord;
+    upload: Address;
+    member: Member;
+    approvers: readonly Address[];
+    proposed: readonly Instruction[];
+  }>,
+): Promise<void> {
+  await checkOwnEntry(input);
+  checkInstructionsMatch(
+    [
+      await registerVaultInstruction({
+        client: input.client,
+        settings: input.settings,
+        approvers: input.approvers.map((approver) =>
+          createNoopSigner(approver),
+        ),
+        record: input.record,
+        upload: input.upload,
+      }),
+    ],
+    input.proposed,
+  );
+}
+
+/**
+ * For an approver, before it co-signs a Rotate: checks the proposed record
+ * and upload as `checkOwnEntry` does, then builds the Rotate instructions
+ * itself and checks that `proposed` is exactly those. That covers what the
+ * record check cannot see: the hash written to the pointer, the record that
+ * is closed, where its rent goes, the new signers' permissions and the
+ * threshold.
+ *
+ * The approver states the rotation it agrees to, as `rotateSmartAccount`
+ * takes it: `keep` lists the current signers that stay, with their current
+ * permissions, `add` lists the new signers with their permissions, and
+ * `threshold` is the new threshold. The record must name exactly those
+ * signers, so a rotation that drops or adds anyone else is rejected. An
+ * approver that stays or is added must also open its own entry; one the
+ * rotation removes has none.
+ *
+ * `proposed` must hold every instruction of the transaction the approver
+ * signs, as the rotator built them; an instruction left out is not checked.
+ */
+export async function checkRotation(
+  input: Readonly<{
+    client: SprClient;
+    settings: Address;
+    record: KeyRecord;
+    upload: Address;
+    member: Member;
+    approvers: readonly Address[];
+    rentPayer: Address;
+    keep: readonly Address[];
+    add: readonly SmartAccountSigner[];
+    threshold: number;
+    proposed: readonly Instruction[];
+  }>,
+): Promise<void> {
+  const { record, member } = input;
+  const current = await fetchSettings(input.client, input.settings);
+  checkSyncConsensus(current, input.approvers);
+  const published = await checkProposedKeyRecord(input);
+  if (published === undefined) {
+    throw new Error(`the vault of ${input.settings} has no key record`);
+  }
+  for (const signer of input.add) {
+    if (current.signers.some((entry) => entry.key === signer.key)) {
+      throw new Error(`${signer.key} is already a signer; list it in keep`);
+    }
+  }
+  const kept = input.keep.map((key) => {
+    const signer = current.signers.find((entry) => entry.key === key);
+    if (signer === undefined) throw new Error(`${key} is not a current signer`);
+    return signer;
+  });
+  const next = [...kept, ...input.add];
+  // Throws unless the record names exactly the `next` signers.
+  const expected = await rotateSmartAccountInstructions({
+    settings: input.settings,
+    current,
+    approvers: input.approvers.map((approver) => createNoopSigner(approver)),
+    rentPayer: createNoopSigner(input.rentPayer),
+    record,
+    upload: input.upload,
+    predecessor: published.address,
+    next,
+    threshold: input.threshold,
+  });
+  if (next.some((signer) => signer.key === member.signer.address)) {
+    checkEntryOpens(record, member);
+  }
+  checkInstructionsMatch(expected, input.proposed);
 }
 
 /** The key holders for syncing and proving as the vault. */
@@ -321,7 +499,10 @@ export async function createSmartAccount(
   }
 }
 
-function sortedSigners(signers: readonly NewSigner[]): SmartAccountSigner[] {
+/** `signers` as Squads stores them: key and permissions, sorted by key. */
+function sortedSigners(
+  signers: readonly SmartAccountSigner[],
+): SmartAccountSigner[] {
   return signers
     .map(({ key, permissions }) => ({ key, permissions }))
     .sort((a, b) => compareAddresses(a.key, b.key));
@@ -336,9 +517,9 @@ function sortedSigners(signers: readonly NewSigner[]): SmartAccountSigner[] {
  * of the record's public keys and the first publication of its upload,
  * both signed by the vault. The vault pays the rent of its user registry
  * record and storage pointer, so it needs SOL; the upload's payer funded the
- * record. Each approver runs `checkOwnEntry` on `record` and the upload
- * first. `register` fails on chain once the vault is registered, so a second
- * Register cannot replace the keys.
+ * record at `upload`. Each approver runs `checkRegistration` first. `register`
+ * fails on chain once the vault is registered, so a second Register cannot
+ * replace the keys.
  */
 export async function registerVaultInstruction(
   input: Readonly<{
@@ -346,7 +527,7 @@ export async function registerVaultInstruction(
     settings: Address;
     approvers: readonly TransactionSigner[];
     record: KeyRecord;
-    upload: Pick<RecordUpload, "address" | "refund">;
+    upload: Address;
   }>,
 ): Promise<Instruction> {
   const decoded = await checkApprovers(
@@ -372,13 +553,12 @@ export async function registerVaultInstruction(
     approvers: input.approvers,
     inner: [
       await registerVaultKeysInstruction(vault, input.record),
-      ...(await publishKeyRecordInstructions(
-        input.client.solanaRpc,
-        vault,
-        input.upload,
-        undefined,
-        input.record,
-      )),
+      ...(await publishRecordInstructions({
+        owner: vault,
+        upload: input.upload,
+        predecessor: undefined,
+        bytes: encodeKeyRecord(input.record),
+      })),
     ],
   });
 }
@@ -429,15 +609,84 @@ async function registeredViewingKey(
 }
 
 /**
+ * The Rotate instructions of step 5, in order: Squads
+ * `executeTransactionSyncV2` with the user registry `update_keys` and the
+ * publication of the record at `upload`, which closes `predecessor`, then
+ * Squads `executeSettingsTransactionSync` moving `current` to the `next`
+ * signers and `threshold`, if that changes anything.
+ *
+ * They depend only on the input, so the rotator and every approver build the
+ * same instructions. `next` must name exactly the record's signers.
+ */
+export async function rotateSmartAccountInstructions(
+  input: Readonly<{
+    settings: Address;
+    /** The decoded Squads Settings account before the rotation. */
+    current: Settings;
+    approvers: readonly TransactionSigner[];
+    /** Pays the Settings reallocation when the signer list grows. */
+    rentPayer: TransactionSigner;
+    record: KeyRecord;
+    /** The Record account holding `record`, frozen under the vault. */
+    upload: Address;
+    /** The Record account of the key record this rotation replaces. */
+    predecessor: Address;
+    next: readonly SmartAccountSigner[];
+    threshold: number;
+  }>,
+): Promise<Instruction[]> {
+  const { record } = input;
+  const next = sortedSigners(input.next);
+  const recordSigners = record.entries
+    .map((entry) => entry.signer)
+    .sort(compareAddresses);
+  if (
+    next.length !== recordSigners.length ||
+    next.some((signer, index) => signer.key !== recordSigners.at(index))
+  ) {
+    throw new Error("the new signers are not the key record's signers");
+  }
+  const vault = await vaultAddress(input.settings);
+  const instructions: Instruction[] = [
+    await executeTransactionSyncInstruction({
+      settings: input.settings,
+      approvers: input.approvers,
+      inner: [
+        await updateKeysInstruction(vault, record.sharedViewingPublicKey),
+        ...(await publishRecordInstructions({
+          owner: vault,
+          upload: input.upload,
+          predecessor: input.predecessor,
+          bytes: encodeKeyRecord(record),
+        })),
+      ],
+    }),
+  ];
+  const actions = rotationActions(input.current, next, input.threshold);
+  // A key-only rotate changes no settings; Squads rejects an empty list.
+  if (actions.length > 0) {
+    instructions.push(
+      executeSettingsTransactionSyncInstruction({
+        settings: input.settings,
+        rentPayer: input.rentPayer,
+        approvers: input.approvers,
+        actions,
+      }),
+    );
+  }
+  return instructions;
+}
+
+/**
  * Rotate steps 2 to 5 for a registered vault: recovers the current secrets,
  * encrypts a new shared viewing key and the unchanged nullifier secret to
  * the new signer set, and returns the new record and the rotate
  * instructions. `keep` lists the current signers that stay, whose viewing
  * keys come from the user registry; `add` lists new signers with their
- * viewing keys. `payer` funds the upload; `refund`, the payer by default, is
- * refunded when a later rotate closes this record. After the approvals
- * (`checkOwnEntry`), the rotator sends the instructions, which write the new
- * key and the new record together.
+ * viewing keys. `payer` funds the upload; when a later rotate closes this
+ * record, its rent goes to the vault. After the approvals (`checkRotation`),
+ * the rotator sends the instructions, which write the new key and the new
+ * record together.
  */
 export async function rotateSmartAccount(
   input: Readonly<{
@@ -445,7 +694,6 @@ export async function rotateSmartAccount(
     settings: Address;
     rotator: Member;
     payer: TransactionSigner;
-    refund?: Address;
     approvers: readonly TransactionSigner[];
     keep: readonly Address[];
     add: readonly NewSigner[];
@@ -507,41 +755,19 @@ export async function rotateSmartAccount(
     const upload = await prepareKeyRecordUpload({
       owner: vault,
       payer: input.payer,
-      refund: input.refund,
       record: newRecord,
     });
-    const instructions: Instruction[] = [
-      await executeTransactionSyncInstruction({
-        settings: input.settings,
-        approvers: input.approvers,
-        inner: [
-          await updateKeysInstruction(vault, newRecord.sharedViewingPublicKey),
-          ...(await publishKeyRecordInstructions(
-            input.client.solanaRpc,
-            vault,
-            upload,
-            published,
-            newRecord,
-          )),
-        ],
-      }),
-    ];
-    const actions = rotationActions(
+    const instructions = await rotateSmartAccountInstructions({
+      settings: input.settings,
       current,
-      sortedSigners(next),
-      input.threshold,
-    );
-    // A key-only rotate changes no settings; Squads rejects an empty list.
-    if (actions.length > 0) {
-      instructions.push(
-        executeSettingsTransactionSyncInstruction({
-          settings: input.settings,
-          rentPayer: input.rotator.signer,
-          approvers: input.approvers,
-          actions,
-        }),
-      );
-    }
+      approvers: input.approvers,
+      rentPayer: input.rotator.signer,
+      record: newRecord,
+      upload: upload.address,
+      predecessor: published.address,
+      next,
+      threshold: input.threshold,
+    });
     return { record: newRecord, upload, instructions };
   } finally {
     previousViewingKeys.forEach((key) => key.destroy());

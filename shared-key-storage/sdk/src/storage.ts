@@ -2,14 +2,14 @@
  * Key-record storage on the SPL Record program, with no custom program.
  *
  * - A record is a Record account: a 33-byte header (version, authority) and
- *   the record bytes. A sponsor creates it, writes it in chunks and finally
+ *   the record bytes. A payer creates it, writes it in chunks and finally
  *   hands its authority to the owner, which freezes the bytes.
  * - The owner's pointer is a second Record account at
- *   `createWithSeed(owner, POINTER_SEED, Record)`, owned by the owner. It names
- *   the current record, its revision, the SHA-256 of its bytes and the
- *   destination that gets its rent back when it is replaced.
+ *   `createWithSeed(owner, POINTER_SEED, Record)`, controlled by the owner. It
+ *   names the current record and the SHA-256 of its bytes.
  * - Publication is a few instructions the owner signs in one transaction:
- *   write the pointer and close the replaced record.
+ *   write the pointer and close the replaced record, whose rent goes to the
+ *   owner.
  *
  * The Record program enforces only "the authority writes and closes". Every
  * other rule lives here: readers check the pointer's owner and authority, the
@@ -50,8 +50,8 @@ export const STORAGE_CHUNK_SIZE = 768;
 export const MAX_RECORD_SIZE = 10 * 1024 * 1024 - RECORD_HEADER_SIZE;
 /** Seed of the owner's pointer, `createWithSeed(owner, POINTER_SEED, Record)`. */
 export const POINTER_SEED = "key-record-pointer";
-/** `SKRPTR01`, current record, revision, data hash, refund destination. */
-export const POINTER_DATA_SIZE = 8 + 32 + 8 + 32 + 32;
+/** `SKRPTR02`, current record, data hash. */
+export const POINTER_DATA_SIZE = 8 + 32 + 32;
 
 const RECORD_VERSION = 1;
 const RECORD_INITIALIZE = 0;
@@ -65,46 +65,33 @@ const SYSTEM_ASSIGN_WITH_SEED = 10;
 const addressEncoder = getAddressEncoder();
 const addressDecoder = getAddressDecoder();
 const utf8 = new TextEncoder();
-const POINTER_MAGIC = utf8.encode("SKRPTR01");
+const POINTER_MAGIC = utf8.encode("SKRPTR02");
 
 /** What the owner's pointer says about its current record. */
 export interface StoragePointer {
   readonly current: Address;
-  /** 1 for the first publication, incremented by every replacement. */
-  readonly revision: bigint;
   /** SHA-256 of the current record's bytes. */
   readonly dataHash: Uint8Array;
-  /** Receives the current record's rent when a replacement closes it. */
-  readonly refund: Address;
 }
 
 export interface RecordUpload {
   /** The new record account. */
   readonly address: Address;
-  /** Recorded in the pointer at publication; gets the rent back later. */
-  readonly refund: Address;
   /**
    * Send each entry as its own transaction, in order. The first creates the
    * record, the last hands its authority to the owner and freezes the bytes.
    */
   readonly transactions: readonly (readonly Instruction[])[];
   /**
-   * Cancels the upload before its last transaction: the payer signs and the
-   * refund destination gets the rent. Afterwards only the owner can close it.
+   * Cancels the upload before its last transaction: the payer signs and gets
+   * the rent back. Afterwards only the owner can close it.
    */
   readonly closeInstruction: Instruction;
 }
 
-/** The published record a publication replaces and closes. */
-export interface Predecessor {
-  readonly address: Address;
-  readonly revision: bigint;
-  /** The predecessor's refund destination, credited when it is closed. */
-  readonly refund: Address;
-}
-
 /** The current published record of an owner, read through its pointer. */
-export interface PublishedRecord extends Predecessor {
+export interface PublishedRecord {
+  readonly address: Address;
   readonly bytes: Uint8Array;
 }
 
@@ -148,9 +135,7 @@ export function encodeStoragePointer(pointer: StoragePointer): Uint8Array {
   return new ByteWriter()
     .bytes(POINTER_MAGIC)
     .bytes(addressEncoder.encode(pointer.current))
-    .u64(pointer.revision)
     .bytes(pointer.dataHash)
-    .bytes(addressEncoder.encode(pointer.refund))
     .finish();
 }
 
@@ -160,12 +145,9 @@ export function decodeStoragePointer(data: Uint8Array): StoragePointer {
     throw new Error("not a storage pointer");
   }
   const current = addressDecoder.decode(reader.bytes(32, "current record"));
-  const revision = reader.u64("revision");
   const dataHash = reader.bytes(32, "data hash");
-  const refund = addressDecoder.decode(reader.bytes(32, "refund"));
   reader.end();
-  if (revision === 0n) throw new Error("storage pointer has no revision");
-  return { current, revision, dataHash, refund };
+  return { current, dataHash };
 }
 
 /** Reads at `confirmed`, so a record published in a confirmed transaction is visible. */
@@ -229,12 +211,7 @@ export async function fetchPublishedRecord(
   if (!bytesEqual(storageDataHash(bytes), pointer.dataHash)) {
     throw new Error("the current record does not match its pointer's hash");
   }
-  return {
-    address: pointer.current,
-    revision: pointer.revision,
-    refund: pointer.refund,
-    bytes,
-  };
+  return { address: pointer.current, bytes };
 }
 
 function recordInstruction(
@@ -271,6 +248,21 @@ function recordWrite(
   );
 }
 
+function recordSetAuthority(
+  record: Address,
+  authority: AccountMeta,
+  newAuthority: Address,
+): Instruction {
+  return recordInstruction(
+    [
+      { address: record, role: AccountRole.WRITABLE },
+      authority,
+      { address: newAuthority, role: AccountRole.READONLY },
+    ],
+    Uint8Array.of(RECORD_SET_AUTHORITY),
+  );
+}
+
 function recordClose(
   record: Address,
   authority: AccountMeta,
@@ -301,17 +293,14 @@ function seedBytes(seed: string): Uint8Array {
 
 /**
  * Upload separately; publication requires the owner. `payer` funds the record
- * and signs every transaction. `refund`, the payer by default, gets the rent
- * back when a later publication replaces this record or when the payer cancels
- * it before the last transaction. Use a plain wallet: if it is a program or
- * another program's account when a publication replaces this record, the
- * owner gets the rent instead.
+ * and signs every transaction. The payer gets the rent back only by cancelling
+ * the upload before its last transaction; once a later publication replaces
+ * the record, its rent goes to the owner.
  */
 export async function prepareRecordUpload(
   input: Readonly<{
     owner: Address;
     payer: TransactionSigner;
-    refund?: Address;
     bytes: Uint8Array;
   }>,
 ): Promise<RecordUpload> {
@@ -332,7 +321,6 @@ export async function prepareRecordUpload(
     role: AccountRole.READONLY_SIGNER,
     signer: input.payer,
   } satisfies AccountSignerMeta;
-  const refund = input.refund ?? input.payer.address;
   const space = RECORD_HEADER_SIZE + input.bytes.length;
   const transactions: Instruction[][] = [
     [
@@ -366,21 +354,15 @@ export async function prepareRecordUpload(
   // Handing the authority to the owner freezes the bytes for approval.
   transactions
     .at(-1)
-    ?.push(
-      recordInstruction(
-        [
-          { address: record.address, role: AccountRole.WRITABLE },
-          authority,
-          { address: input.owner, role: AccountRole.READONLY },
-        ],
-        Uint8Array.of(RECORD_SET_AUTHORITY),
-      ),
-    );
+    ?.push(recordSetAuthority(record.address, authority, input.owner));
   return {
     address: record.address,
-    refund,
     transactions,
-    closeInstruction: recordClose(record.address, authority, refund),
+    closeInstruction: recordClose(
+      record.address,
+      authority,
+      input.payer.address,
+    ),
   };
 }
 
@@ -405,54 +387,54 @@ export async function checkUploadedRecord(
 /**
  * The owner's publication of an uploaded record: the instructions it signs in
  * one transaction. The first publication creates the pointer; a replacement
- * rewrites it and closes `predecessor`, refunding its recorded destination (or
- * the owner, if that destination is not a plain wallet). The pointer
- * records the hash of `bytes`, so readers reject anything else; approvers run
- * `checkUploadedRecord` first.
+ * rewrites it and closes `predecessor`, the record it replaces, whose rent
+ * goes to the owner. The pointer records the hash of `bytes`, so readers
+ * reject anything else; approvers run `checkUploadedRecord` first.
+ *
+ * The instructions depend only on the input, so an approver can build them
+ * again and compare them with what it is asked to sign. The Record program
+ * rejects the transaction unless the upload is frozen under the owner. A
+ * first publication fails if the pointer exists, and a replacement fails if
+ * `predecessor` is no longer a record of the owner, which stops a stale or
+ * repeated publication.
  */
 export async function publishRecordInstructions(
-  rpc: StorageRpc,
   input: Readonly<{
     owner: Address;
-    upload: Pick<RecordUpload, "address" | "refund">;
-    predecessor: Predecessor | undefined;
+    /** The uploaded record account to publish. */
+    upload: Address;
+    /** The current published record, undefined for the first publication. */
+    predecessor: Address | undefined;
     bytes: Uint8Array;
   }>,
 ): Promise<Instruction[]> {
   const { owner, upload, predecessor, bytes } = input;
-  if (predecessor?.address === upload.address) {
+  if (predecessor === upload) {
     throw new Error("cannot replace a record with itself");
   }
   const ownerSigner = { address: owner, role: AccountRole.READONLY_SIGNER };
   const pointer = await storagePointerAddress(owner);
   const pointerData = encodeStoragePointer({
-    current: upload.address,
-    revision: (predecessor?.revision ?? 0n) + 1n,
+    current: upload,
     dataHash: storageDataHash(bytes),
-    refund: upload.refund,
   });
+  // Setting the upload's authority to the owner it must already have changes
+  // nothing, but the Record program rejects it unless the upload exists, is
+  // initialized and is controlled by the owner. A publication therefore
+  // cannot name a missing record or one its payer can still rewrite or close.
+  const frozenCheck = recordSetAuthority(upload, ownerSigner, owner);
   if (predecessor !== undefined) {
-    // Only a plain wallet can always be credited: a program or sysvar would
-    // fail the close and block every later replacement.
-    const refund = await fetchAccount(rpc, predecessor.refund);
-    const wallet =
-      !refund.exists ||
-      (refund.programAddress === SYSTEM_PROGRAM_ADDRESS && !refund.executable);
-    const recipient = wallet ? predecessor.refund : owner;
     return [
+      frozenCheck,
       recordWrite(pointer, ownerSigner, 0, pointerData),
-      recordClose(predecessor.address, ownerSigner, recipient),
+      recordClose(predecessor, ownerSigner, owner),
     ];
   }
-  // Allocate and assign instead of create, so lamports someone sent to the
-  // pointer address cannot block the first publication.
-  const existing = await fetchAccount(rpc, pointer);
-  if (existing.exists && existing.programAddress !== SYSTEM_PROGRAM_ADDRESS) {
-    throw new Error("the owner already has a storage pointer");
-  }
+  // Transfer, allocate and assign instead of create, so lamports someone sent
+  // to the pointer address cannot block the first publication. The transfer
+  // is the full rent: reading the pointer's balance first would make the
+  // instructions depend on an RPC read. Allocate fails if the pointer exists.
   const space = RECORD_HEADER_SIZE + POINTER_DATA_SIZE;
-  const missing =
-    rentExemptLamports(space) - (existing.exists ? existing.lamports : 0n);
   const fundingOwner = { address: owner, role: AccountRole.WRITABLE_SIGNER };
   const seeded = [
     { address: pointer, role: AccountRole.WRITABLE },
@@ -462,14 +444,13 @@ export async function publishRecordInstructions(
   const ownerBytes = addressEncoder.encode(owner);
   const programBytes = addressEncoder.encode(RECORD_PROGRAM_ADDRESS);
   return [
-    ...(missing > 0n
-      ? [
-          systemInstruction(
-            [fundingOwner, { address: pointer, role: AccountRole.WRITABLE }],
-            new ByteWriter().u32(SYSTEM_TRANSFER).u64(missing).finish(),
-          ),
-        ]
-      : []),
+    systemInstruction(
+      [fundingOwner, { address: pointer, role: AccountRole.WRITABLE }],
+      new ByteWriter()
+        .u32(SYSTEM_TRANSFER)
+        .u64(rentExemptLamports(space))
+        .finish(),
+    ),
     systemInstruction(
       seeded,
       new ByteWriter()
@@ -490,6 +471,7 @@ export async function publishRecordInstructions(
         .finish(),
     ),
     recordInitialize(pointer, owner),
+    frozenCheck,
     recordWrite(pointer, ownerSigner, 0, pointerData),
   ];
 }
