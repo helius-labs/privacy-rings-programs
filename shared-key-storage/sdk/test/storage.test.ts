@@ -1,332 +1,507 @@
+/**
+ * Storage on the SPL Record program, run end to end in LiteSVM against the
+ * Record binary dumped from mainnet (`test/fixtures/spl_record.so`).
+ */
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
+import { fileURLToPath } from "node:url";
 import { describe, it } from "node:test";
 import {
   AccountRole,
+  addSignersToInstruction,
+  address,
+  appendTransactionMessageInstructions,
+  createTransactionMessage,
   generateKeyPairSigner,
-  getAddressEncoder,
-  getAddressDecoder,
+  getTransactionEncoder,
+  lamports,
+  pipe,
+  setTransactionMessageFeePayerSigner,
+  signTransactionMessageWithSigners,
   type Address,
+  type Instruction,
+  type KeyPairSigner,
+  type TransactionSigner,
 } from "@solana/kit";
-import { ByteReader, ByteWriter } from "../src/bytes.js";
+import { FailedTransactionMetadata, LiteSVM } from "litesvm";
+import { ByteWriter } from "../src/bytes.js";
 import {
-  STORAGE_PROGRAM_ADDRESS,
+  RECORD_HEADER_SIZE,
+  RECORD_PROGRAM_ADDRESS,
   STORAGE_CHUNK_SIZE,
-  BUFFER_HEADER_SIZE,
-  EMPTY_RECORD_ADDRESS,
-  applyRecordInstruction,
-  decodeStorageHead,
-  decodeStoredRecord,
+  checkUploadedRecord,
+  decodeRecordAccount,
+  decodeStoragePointer,
+  encodeStoragePointer,
   fetchPublishedRecord,
-  fetchStorageHead,
-  fetchStoredRecord,
   prepareRecordUpload,
+  publishRecordInstructions,
+  rentExemptLamports,
   storageDataHash,
-  storageHeadAddress,
+  storagePointerAddress,
+  type PublishedRecord,
+  type RecordUpload,
+  type StorageRpc,
 } from "../src/storage.js";
-import {
-  accountRpc,
-  headBytes,
-  publish,
-  storedBytes,
-  type FakeAccounts,
-} from "./storageAccounts.js";
 
-const addressEncoder = getAddressEncoder();
-const addressDecoder = getAddressDecoder();
+const RECORD_SO = fileURLToPath(
+  new URL("./fixtures/spl_record.so", import.meta.url),
+);
+const COMPUTE_BUDGET = address("ComputeBudget111111111111111111111111111111");
+const transactionEncoder = getTransactionEncoder();
 
-async function newAddress(): Promise<Address> {
-  return (await generateKeyPairSigner()).address;
+/** A LiteSVM with the mainnet Record binary and two funded wallets. */
+class Chain {
+  readonly svm = new LiteSVM();
+
+  constructor() {
+    this.svm.addProgramFromFile(RECORD_PROGRAM_ADDRESS, RECORD_SO);
+  }
+
+  async wallet(sol = 10n): Promise<KeyPairSigner> {
+    const signer = await generateKeyPairSigner();
+    this.svm.airdrop(signer.address, lamports(sol * 1_000_000_000n));
+    return signer;
+  }
+
+  /** `StorageRpc` reading this chain's accounts. */
+  get rpc(): StorageRpc {
+    const svm = this.svm;
+    return {
+      getAccountInfo: (account: Address) => ({
+        send: async () => {
+          const found = svm.getAccount(account);
+          return {
+            context: { slot: 0n },
+            value: found.exists
+              ? {
+                  data: [Buffer.from(found.data).toString("base64"), "base64"],
+                  executable: found.executable,
+                  lamports: found.lamports,
+                  owner: found.programAddress,
+                  space: BigInt(found.data.length),
+                }
+              : null,
+          };
+        },
+      }),
+    } as unknown as StorageRpc;
+  }
+
+  balance(account: Address): bigint {
+    return this.svm.getBalance(account) ?? 0n;
+  }
+
+  exists(account: Address): boolean {
+    return this.svm.getAccount(account).exists;
+  }
+
+  /** Signs with `feePayer` plus `signers` and returns the wire size. */
+  async send(
+    feePayer: TransactionSigner,
+    instructions: readonly Instruction[],
+    signers: readonly TransactionSigner[] = [],
+  ): Promise<number> {
+    const message = pipe(
+      createTransactionMessage({ version: 0 }),
+      (m) => setTransactionMessageFeePayerSigner(feePayer, m),
+      (m) => this.svm.setTransactionMessageLifetimeUsingLatestBlockhash(m),
+      (m) =>
+        appendTransactionMessageInstructions(
+          instructions.map((ix) => addSignersToInstruction([...signers], ix)),
+          m,
+        ),
+    );
+    const transaction = await signTransactionMessageWithSigners(message);
+    const result = this.svm.sendTransaction(transaction);
+    if (result instanceof FailedTransactionMetadata) {
+      throw new Error(`transaction failed: ${result.toString()}`);
+    }
+    this.svm.expireBlockhash();
+    return transactionEncoder.encode(transaction).length;
+  }
+
+  async upload(
+    payer: KeyPairSigner,
+    upload: RecordUpload,
+    count = upload.transactions.length,
+  ): Promise<void> {
+    for (const instructions of upload.transactions.slice(0, count)) {
+      await this.send(payer, instructions);
+    }
+  }
+
+  async publish(
+    owner: KeyPairSigner,
+    upload: RecordUpload,
+    predecessor: PublishedRecord | undefined,
+    bytes: Uint8Array,
+  ): Promise<Instruction[]> {
+    const instructions = await publishRecordInstructions(this.rpc, {
+      owner: owner.address,
+      upload,
+      predecessor,
+      bytes,
+    });
+    await this.send(owner, instructions, [owner]);
+    return instructions;
+  }
 }
 
-describe("versioned storage", () => {
-  it("uploads canonical chunks and approves exactly their hash", async () => {
-    const payer = await generateKeyPairSigner();
-    const owner = await newAddress();
-    const refund = await newAddress();
-    const bytes = Uint8Array.from({ length: 2800 }, (_, index) => index % 251);
+function recordBytes(length: number, seed = 1): Uint8Array {
+  return Uint8Array.from({ length }, (_, index) => (index * 31 + seed) % 251);
+}
+
+/** A copy of `bytes` with the byte at `index` flipped. */
+function flipped(bytes: Uint8Array, index: number): Uint8Array {
+  const value = bytes.at(index);
+  if (value === undefined) throw new Error(`no byte at ${index}`);
+  const copy = Uint8Array.from(bytes);
+  copy.set([value ^ 1], index);
+  return copy;
+}
+
+/** The worst case an upload transaction must fit: compute budget and a separate fee payer. */
+function computeBudget(): Instruction[] {
+  return [
+    {
+      programAddress: COMPUTE_BUDGET,
+      data: new ByteWriter().u8(2).u32(200_000).finish(),
+    },
+    {
+      programAddress: COMPUTE_BUDGET,
+      data: new ByteWriter().u8(3).u64(1_000n).finish(),
+    },
+  ];
+}
+
+describe("storage on the SPL Record program", () => {
+  it("uploads in transactions that fit 1,232 bytes and freezes the record under the owner", async () => {
+    const chain = new Chain();
+    const [owner, payer, feePayer] = await Promise.all([
+      chain.wallet(),
+      chain.wallet(),
+      chain.wallet(),
+    ]);
+    const bytes = recordBytes(2800);
     const upload = await prepareRecordUpload({
-      owner,
-      previous: EMPTY_RECORD_ADDRESS,
+      owner: owner.address,
       payer,
-      refund,
       bytes,
     });
-    const chunks: Uint8Array[] = [];
-    let written = 0;
-    let dataHash: Uint8Array = new Uint8Array(32);
-    for (const instruction of upload.instructions) {
-      const reader = new ByteReader(
-        Uint8Array.from(instruction.data!),
-        "store",
-      );
-      // create_buffer (4) for the first chunk, store (1) for the rest.
-      assert.equal(reader.u8("tag"), written === 0 ? 4 : 1);
-      assert.equal(addressDecoder.decode(reader.bytes(32, "owner")), owner);
-      assert.equal(
-        addressDecoder.decode(reader.bytes(32, "predecessor")),
-        EMPTY_RECORD_ADDRESS,
-      );
-      assert.equal(reader.u32("length"), bytes.length);
-      assert.equal(reader.u32("offset"), written);
-      const chunk = reader.bytes(reader.u32("chunk length"), "chunk");
-      reader.end();
-      chunks.push(chunk);
-      written += chunk.length;
-      dataHash = Uint8Array.from(
-        createHash("sha256").update(dataHash).update(chunk).digest(),
-      );
-      assert.deepEqual(
-        instruction.accounts?.map(({ address }) => address),
-        [upload.address, payer.address, EMPTY_RECORD_ADDRESS, refund],
-      );
-    }
-    // The program accepts a short chunk only at the end.
-    assert.deepEqual(
-      chunks.map((chunk) => chunk.length),
-      [STORAGE_CHUNK_SIZE, STORAGE_CHUNK_SIZE, STORAGE_CHUNK_SIZE, 496],
-    );
-    assert.deepEqual(Uint8Array.from(Buffer.concat(chunks)), bytes);
-    const apply = await applyRecordInstruction(
-      owner,
-      upload.address,
-      undefined,
-      bytes,
-    );
-    assert.deepEqual(
-      Uint8Array.from(apply.data!),
-      new ByteWriter()
-        .u8(2)
-        .bytes(addressEncoder.encode(EMPTY_RECORD_ADDRESS))
-        .u64(0n)
-        .bytes(dataHash)
-        .finish(),
-    );
-    assert.deepEqual(
-      apply.accounts?.map(({ address, role }) => ({ address, role })),
-      [
-        {
-          address: await storageHeadAddress(owner),
-          role: AccountRole.WRITABLE,
-        },
-        { address: upload.address, role: AccountRole.WRITABLE },
-        { address: owner, role: AccountRole.READONLY_SIGNER },
-        { address: owner, role: AccountRole.WRITABLE_SIGNER },
-        { address: EMPTY_RECORD_ADDRESS, role: AccountRole.READONLY },
-        // No predecessor: the program's own address marks an absent account.
-        { address: STORAGE_PROGRAM_ADDRESS, role: AccountRole.READONLY },
-        { address: STORAGE_PROGRAM_ADDRESS, role: AccountRole.READONLY },
-      ],
-      "the first apply closes nothing and refunds no one",
-    );
-    assert.deepEqual(
-      {
-        accounts: upload.closeInstruction.accounts?.map(
-          ({ address, role }) => ({ address, role }),
-        ),
-        data: Uint8Array.from(upload.closeInstruction.data!),
-      },
-      {
-        accounts: [
-          { address: upload.address, role: AccountRole.WRITABLE },
-          { address: payer.address, role: AccountRole.READONLY_SIGNER },
-          { address: refund, role: AccountRole.WRITABLE },
-        ],
-        data: Uint8Array.of(3),
-      },
-      "the rent payer cancels the upload and its destination is refunded",
-    );
-  });
-
-  it("matches the independent SHA-256 vector used by the SBF tests", () => {
+    assert.equal(upload.refund, payer.address);
+    // Create, then one write per chunk; the last also hands over authority.
     assert.equal(
-      Buffer.from(storageDataHash(new Uint8Array(25_000).fill(37))).toString(
-        "hex",
-      ),
-      "3c3fe9a628e835a2691694e2a3ccf8f7e42c104fe99a90d64c1de10b4ff8e03e",
+      upload.transactions.length,
+      1 + Math.ceil(bytes.length / STORAGE_CHUNK_SIZE),
     );
-  });
-
-  it("distinguishes partial uploads from complete sealed records", async () => {
-    const owner = await newAddress();
-    const payer = await newAddress();
-    const refund = await newAddress();
-    const bytes = Uint8Array.of(1, 2, 3);
-    const stored = (sealed: number, totalLength?: number) =>
-      storedBytes({
-        owner,
-        payer,
-        refund,
-        previous: EMPTY_RECORD_ADDRESS,
-        bytes,
-        sealed,
-        totalLength,
-      });
-    assert.deepEqual(decodeStoredRecord(stored(1)), {
-      sealed: true,
-      owner,
-      payer,
-      refund,
-      previous: EMPTY_RECORD_ADDRESS,
-      totalLength: 3,
-      dataHash: storageDataHash(bytes),
-      bytes,
-    });
-    assert.equal(decodeStoredRecord(stored(0, 5)).sealed, false);
-    assert.throws(() => decodeStoredRecord(stored(1, 5)), /length/);
-    assert.throws(() => decodeStoredRecord(stored(2)), /state/);
-    assert.throws(() => decodeStoredRecord(stored(0, 2)), /length/);
-    const encoded = stored(1);
-    for (let length = 0; length < BUFFER_HEADER_SIZE; length += 1) {
-      assert.throws(
-        () => decodeStoredRecord(encoded.slice(0, length)),
-        /truncated/,
-      );
+    for (const instructions of upload.transactions) {
+      const size = await chain.send(feePayer, [
+        ...computeBudget(),
+        ...instructions,
+      ]);
+      assert.ok(size <= 1232, `upload transaction is ${size} bytes`);
     }
-    assert.throws(
-      () => decodeStorageHead(new Uint8Array(48)),
-      /not a storage head/,
+    const account = chain.svm.getAccount(upload.address);
+    assert.ok(account.exists);
+    assert.equal(account.programAddress, RECORD_PROGRAM_ADDRESS);
+    assert.equal(
+      account.lamports,
+      rentExemptLamports(RECORD_HEADER_SIZE + bytes.length),
     );
-    assert.throws(
-      () => decodeStorageHead(headBytes(EMPTY_RECORD_ADDRESS)),
-      /empty storage head/,
-    );
+    assert.deepEqual(decodeRecordAccount(account.data), {
+      authority: owner.address,
+      data: bytes,
+    });
+    await checkUploadedRecord(chain.rpc, owner.address, upload.address, bytes);
   });
 
-  it("reads the published record without needing a closed predecessor", async () => {
-    const owner = await newAddress();
-    const payer = await newAddress();
-    const refund = await newAddress();
-    const previous = await newAddress();
-    const current = await newAddress();
-    const bytes = Uint8Array.of(4, 5, 6);
-    const accounts: FakeAccounts = new Map();
-    await publish(accounts, {
-      owner,
-      record: current,
+  it("publishes the first record through a pointer the owner controls", async () => {
+    const chain = new Chain();
+    const [owner, payer] = await Promise.all([chain.wallet(), chain.wallet()]);
+    assert.equal(
+      await fetchPublishedRecord(chain.rpc, owner.address),
+      undefined,
+    );
+    const bytes = recordBytes(1000);
+    const upload = await prepareRecordUpload({
+      owner: owner.address,
       payer,
-      refund,
-      previous,
-      bytes,
-      revision: 7n,
-    });
-    const rpc = accountRpc(accounts);
-    assert.deepEqual(await fetchPublishedRecord(rpc, owner), {
-      address: current,
-      revision: 7n,
-      refund,
       bytes,
     });
-    await assert.rejects(fetchStoredRecord(rpc, previous), /missing record/);
-    accounts.delete(await storageHeadAddress(owner));
-    assert.equal(await fetchStorageHead(rpc, owner), undefined);
-    assert.equal(await fetchPublishedRecord(rpc, owner), undefined);
+    await chain.upload(payer, upload);
+    await chain.publish(owner, upload, undefined, bytes);
+    assert.deepEqual(await fetchPublishedRecord(chain.rpc, owner.address), {
+      address: upload.address,
+      revision: 1n,
+      refund: payer.address,
+      bytes,
+    });
+    const pointer = chain.svm.getAccount(
+      await storagePointerAddress(owner.address),
+    );
+    assert.ok(pointer.exists);
+    assert.equal(pointer.programAddress, RECORD_PROGRAM_ADDRESS);
+    assert.equal(decodeRecordAccount(pointer.data).authority, owner.address);
   });
 
-  it("rejects a head that points to an unpublished or foreign record", async () => {
-    const owner = await newAddress();
-    const payer = await newAddress();
-    const record = await newAddress();
-    const accounts: FakeAccounts = new Map();
-    await publish(accounts, {
-      owner,
-      record,
+  it("replaces the record, closes the predecessor and refunds its destination", async () => {
+    const chain = new Chain();
+    const [owner, payer, sponsor, destination] = await Promise.all([
+      chain.wallet(),
+      chain.wallet(),
+      chain.wallet(),
+      chain.wallet(),
+    ]);
+    const first = recordBytes(900, 1);
+    const firstUpload = await prepareRecordUpload({
+      owner: owner.address,
       payer,
-      previous: EMPTY_RECORD_ADDRESS,
-      bytes: Uint8Array.of(1),
+      refund: destination.address,
+      bytes: first,
     });
-    const rpc = accountRpc(accounts);
-    for (const data of [
-      storedBytes({
-        owner,
-        payer,
-        previous: EMPTY_RECORD_ADDRESS,
-        bytes: Uint8Array.of(1),
-        sealed: 0,
+    await chain.upload(payer, firstUpload);
+    await chain.publish(owner, firstUpload, undefined, first);
+    const published = await fetchPublishedRecord(chain.rpc, owner.address);
+    assert.ok(published);
+
+    const second = recordBytes(1700, 2);
+    const secondUpload = await prepareRecordUpload({
+      owner: owner.address,
+      payer: sponsor,
+      bytes: second,
+    });
+    await chain.upload(sponsor, secondUpload);
+    assert.deepEqual(
+      await fetchPublishedRecord(chain.rpc, owner.address),
+      published,
+      "an upload leaves the published record unchanged",
+    );
+    const firstRent = chain.balance(firstUpload.address);
+    const destinationBefore = chain.balance(destination.address);
+    await chain.publish(owner, secondUpload, published, second);
+
+    assert.deepEqual(await fetchPublishedRecord(chain.rpc, owner.address), {
+      address: secondUpload.address,
+      revision: 2n,
+      refund: sponsor.address,
+      bytes: second,
+    });
+    assert.equal(chain.exists(firstUpload.address), false);
+    assert.equal(
+      chain.balance(destination.address),
+      destinationBefore + firstRent,
+    );
+    // Republishing the current record would close what the pointer names.
+    const current = await fetchPublishedRecord(chain.rpc, owner.address);
+    assert.ok(current);
+    await assert.rejects(
+      publishRecordInstructions(chain.rpc, {
+        owner: owner.address,
+        upload: secondUpload,
+        predecessor: current,
+        bytes: second,
       }),
-      storedBytes({
-        owner: payer,
-        payer,
-        previous: EMPTY_RECORD_ADDRESS,
-        bytes: Uint8Array.of(1),
-      }),
-    ]) {
-      accounts.set(record, { owner: STORAGE_PROGRAM_ADDRESS, data });
-      await assert.rejects(
-        fetchPublishedRecord(rpc, owner),
-        /unpublished or foreign record/,
-      );
-    }
+      /with itself/,
+    );
   });
 
-  it("binds the predecessor and revision and refunds its destination", async () => {
-    const owner = await newAddress();
-    const previous = await newAddress();
-    const refund = await newAddress();
-    const current = await newAddress();
-    const bytes = Uint8Array.of(7);
-    const instruction = await applyRecordInstruction(
-      owner,
-      current,
-      { address: previous, revision: 7n, refund },
+  it("lets the payer cancel an upload only before the authority handover", async () => {
+    const chain = new Chain();
+    const [owner, payer, destination] = await Promise.all([
+      chain.wallet(),
+      chain.wallet(),
+      chain.wallet(),
+    ]);
+    const bytes = recordBytes(2000);
+    const pending = await prepareRecordUpload({
+      owner: owner.address,
+      payer,
+      refund: destination.address,
       bytes,
-    );
-    const reader = new ByteReader(Uint8Array.from(instruction.data!), "apply");
-    assert.equal(reader.u8("tag"), 2);
-    assert.equal(addressDecoder.decode(reader.bytes(32, "previous")), previous);
-    assert.equal(reader.u64("revision"), 7n);
-    assert.deepEqual(reader.bytes(32, "hash"), storageDataHash(bytes));
-    reader.end();
-    assert.deepEqual(instruction.accounts?.slice(5), [
-      { address: previous, role: AccountRole.WRITABLE },
-      { address: refund, role: AccountRole.WRITABLE },
-    ]);
+    });
+    await chain.upload(payer, pending, pending.transactions.length - 1);
+    const rent = chain.balance(pending.address);
+    const before = chain.balance(destination.address);
+    await chain.send(payer, [pending.closeInstruction]);
+    assert.equal(chain.exists(pending.address), false);
+    assert.equal(chain.balance(destination.address), before + rent);
+
+    const frozen = await prepareRecordUpload({
+      owner: owner.address,
+      payer,
+      bytes,
+    });
+    await chain.upload(payer, frozen);
+    await assert.rejects(chain.send(payer, [frozen.closeInstruction]));
+    assert.equal(chain.exists(frozen.address), true);
   });
 
-  it("rejects foreign owners and invalid head revisions", async () => {
-    const owner = await newAddress();
-    const record = await newAddress();
-    const head = await storageHeadAddress(owner);
-    const accounts: FakeAccounts = new Map([
-      [head, { owner: EMPTY_RECORD_ADDRESS, data: headBytes(record) }],
-      [
-        record,
-        {
-          owner: EMPTY_RECORD_ADDRESS,
-          data: storedBytes({
-            owner,
-            payer: owner,
-            previous: EMPTY_RECORD_ADDRESS,
-            bytes: Uint8Array.of(1),
-          }),
-        },
-      ],
-    ]);
-    const rpc = accountRpc(accounts);
-    await assert.rejects(
-      fetchStorageHead(rpc, owner),
-      /wrong storage head owner/,
+  it("publishes even when someone prefunded the pointer address", async () => {
+    const chain = new Chain();
+    const [owner, payer] = await Promise.all([chain.wallet(), chain.wallet()]);
+    const pointer = await storagePointerAddress(owner.address);
+    chain.svm.airdrop(pointer, lamports(5_000_000n));
+    const bytes = recordBytes(300);
+    const upload = await prepareRecordUpload({
+      owner: owner.address,
+      payer,
+      bytes,
+    });
+    await chain.upload(payer, upload);
+    const instructions = await chain.publish(owner, upload, undefined, bytes);
+    // The prefund already covers the rent, so no transfer is needed.
+    assert.equal(
+      instructions.some((ix) => ix.data?.[0] === 2 && ix.data.length === 12),
+      false,
     );
+    assert.equal(
+      (await fetchPublishedRecord(chain.rpc, owner.address))?.address,
+      upload.address,
+    );
+  });
+
+  it("refunds the owner when the destination has since become a program", async () => {
+    const chain = new Chain();
+    const [owner, payer] = await Promise.all([chain.wallet(), chain.wallet()]);
+    // An executable account cannot be credited; here the destination is a
+    // program from the start, as if a program had been deployed there later.
+    const first = recordBytes(400, 3);
+    const firstUpload = await prepareRecordUpload({
+      owner: owner.address,
+      payer,
+      refund: RECORD_PROGRAM_ADDRESS,
+      bytes: first,
+    });
+    await chain.upload(payer, firstUpload);
+    await chain.publish(owner, firstUpload, undefined, first);
+    const published = await fetchPublishedRecord(chain.rpc, owner.address);
+    assert.ok(published);
+    const ownerBefore = chain.balance(owner.address);
+    const firstRent = chain.balance(firstUpload.address);
+
+    const second = recordBytes(400, 4);
+    const secondUpload = await prepareRecordUpload({
+      owner: owner.address,
+      payer,
+      bytes: second,
+    });
+    await chain.upload(payer, secondUpload);
+    const instructions = await publishRecordInstructions(chain.rpc, {
+      owner: owner.address,
+      upload: secondUpload,
+      predecessor: published,
+      bytes: second,
+    });
+    const close = instructions.at(-1);
+    assert.equal(close?.accounts?.[2]?.address, owner.address);
+    await chain.send(owner, instructions, [owner]);
+    assert.equal(chain.exists(firstUpload.address), false);
+    // The owner paid the transaction fee and received the predecessor's rent.
+    assert.equal(chain.balance(owner.address), ownerBefore + firstRent - 5000n);
+  });
+
+  it("rejects uploads approvers must not sign", async () => {
+    const chain = new Chain();
+    const [owner, payer] = await Promise.all([chain.wallet(), chain.wallet()]);
+    const bytes = recordBytes(1600);
+    const upload = await prepareRecordUpload({
+      owner: owner.address,
+      payer,
+      bytes,
+    });
+    // Before the handover the payer can still change the bytes.
+    await chain.upload(payer, upload, upload.transactions.length - 1);
     await assert.rejects(
-      fetchStoredRecord(rpc, record),
-      /wrong storage program owner/,
+      checkUploadedRecord(chain.rpc, owner.address, upload.address, bytes),
+      /not controlled by/,
+    );
+    await chain.upload(payer, {
+      ...upload,
+      transactions: upload.transactions.slice(-1),
+    });
+    const other = flipped(bytes, 0);
+    await assert.rejects(
+      checkUploadedRecord(chain.rpc, owner.address, upload.address, other),
+      /approved bytes/,
+    );
+    await checkUploadedRecord(chain.rpc, owner.address, upload.address, bytes);
+  });
+
+  it("rejects a record that does not match its pointer", async () => {
+    const chain = new Chain();
+    const [owner, payer] = await Promise.all([chain.wallet(), chain.wallet()]);
+    const bytes = recordBytes(500);
+    const upload = await prepareRecordUpload({
+      owner: owner.address,
+      payer,
+      bytes,
+    });
+    await chain.upload(payer, upload);
+    await chain.publish(owner, upload, undefined, bytes);
+    const account = chain.svm.getAccount(upload.address);
+    assert.ok(account.exists);
+    const tampered = flipped(account.data, RECORD_HEADER_SIZE);
+    chain.svm.setAccount({ ...account, data: tampered });
+    await assert.rejects(
+      fetchPublishedRecord(chain.rpc, owner.address),
+      /does not match its pointer/,
+    );
+  });
+});
+
+describe("storage pointer encoding", () => {
+  it("round-trips and rejects malformed pointers", async () => {
+    const pointer = {
+      current: (await generateKeyPairSigner()).address,
+      revision: 7n,
+      dataHash: storageDataHash(Uint8Array.of(1, 2, 3)),
+      refund: (await generateKeyPairSigner()).address,
+    };
+    const encoded = encodeStoragePointer(pointer);
+    assert.deepEqual(decodeStoragePointer(encoded), pointer);
+    assert.throws(() => decodeStoragePointer(encoded.subarray(1)));
+    const badMagic = flipped(encoded, 0);
+    assert.throws(
+      () => decodeStoragePointer(badMagic),
+      /not a storage pointer/,
     );
     assert.throws(
-      () => decodeStorageHead(headBytes(record, 0n)),
-      /empty storage head/,
+      () =>
+        decodeStoragePointer(
+          encodeStoragePointer({ ...pointer, revision: 0n }),
+        ),
+      /no revision/,
     );
   });
 
-  it("refuses an empty upload before preparing instructions", async () => {
+  it("writes Record instructions in the program's own format", async () => {
+    const owner = await generateKeyPairSigner();
     const payer = await generateKeyPairSigner();
-    await assert.rejects(
-      prepareRecordUpload({
-        owner: payer.address,
-        previous: EMPTY_RECORD_ADDRESS,
-        payer,
-        bytes: new Uint8Array(),
-      }),
-      /record length/,
+    const bytes = recordBytes(10);
+    const upload = await prepareRecordUpload({
+      owner: owner.address,
+      payer,
+      bytes,
+    });
+    const [create, write] = upload.transactions;
+    // Initialize: tag 0, record and authority.
+    assert.deepEqual(create?.[1]?.data, Uint8Array.of(0));
+    // Write: tag 1, u64 offset, u32 length, bytes.
+    assert.deepEqual(
+      write?.[0]?.data,
+      new ByteWriter().u8(1).u64(0n).u32(10).bytes(bytes).finish(),
     );
+    // SetAuthority: tag 2, record, current authority (signer), new authority.
+    assert.deepEqual(write?.[1]?.data, Uint8Array.of(2));
+    assert.deepEqual(
+      write?.[1]?.accounts?.map(({ address, role }) => ({ address, role })),
+      [
+        { address: upload.address, role: AccountRole.WRITABLE },
+        { address: payer.address, role: AccountRole.READONLY_SIGNER },
+        { address: owner.address, role: AccountRole.READONLY },
+      ],
+    );
+    // CloseAccount: tag 3, record, authority, destination.
+    assert.deepEqual(upload.closeInstruction.data, Uint8Array.of(3));
   });
 });

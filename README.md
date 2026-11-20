@@ -8,5 +8,5 @@ This repository is a collection of programs that can be used with Solana Privacy
 
    - **Audited** — No
    - **Released** - No
-   - **Status** — Deployed on Devnet and Mainnet
-   - **Program ID** — `Stor9L8wQBAGcAcoUcADt5sWYYaEA65Ws2Cgt5UUqXj`
+   - **Status** — SDK only; no custom program
+   - **Program** — the SPL Record program, `recr1L3PCGKLbckBqMNcJhuuyU1zgo8nBhfLVsJNwr5` on Devnet and Mainnet

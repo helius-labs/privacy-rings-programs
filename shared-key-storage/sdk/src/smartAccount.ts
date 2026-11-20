@@ -2,7 +2,7 @@
  * The Create, Register, Rotate and Spend flows of design.md, as instruction
  * builders. The vault (Squads smart account at index 0) owns the shielded
  * UTXOs; Squads signs for it in `executeTransactionSyncV2`. The current key
- * record is published through the vault's storage head and contains all old
+ * record is published through the vault's storage pointer and contains all old
  * viewing keys. Superseded accounts are closed. No proof checks a key
  * record.
  */
@@ -33,6 +33,7 @@ import {
   buildKeyRecord,
   checkKeyHistory,
   compareAddresses,
+  encodeKeyRecord,
   generateNullifierKey,
   isCurrentKeyRecord,
   recoverSharedSecrets,
@@ -46,12 +47,12 @@ import {
   fetchPublishedKeyRecord,
   fetchVaultRegistry,
   registerVaultKeysInstruction,
-  applyKeyRecordInstruction,
   prepareKeyRecordUpload,
+  publishKeyRecordInstructions,
   updateKeysInstruction,
   type KeyRecordPublication,
 } from "./registry.js";
-import type { RecordUpload } from "./storage.js";
+import { checkUploadedRecord, type RecordUpload } from "./storage.js";
 import {
   checkSyncConsensus,
   createSmartAccountInstruction,
@@ -186,18 +187,20 @@ function destroySecrets(secrets: SharedSecrets): void {
 
 /**
  * For an approver that stays or becomes a signer, before it co-signs a
- * Register or Rotate: checks that its own entry in the new record opens to
- * keys matching the record, including every old viewing key. The previous
- * record comes from the vault's storage head, the same record the signed
- * apply binds as its predecessor, never from the rotator. Before Register
- * there is none, so `record` must be epoch 0. Throws on a bad ciphertext, a
- * missing key or a broken history.
+ * Register or Rotate: checks that the upload at `upload` is frozen under the
+ * vault and holds exactly `record`, and that its own entry in the record
+ * opens to keys matching the record, including every old viewing key. The
+ * previous record comes from the vault's storage pointer, the same record the
+ * publication closes, never from the rotator. Before Register there is none,
+ * so `record` must be epoch 0. Throws on a mismatched upload, a bad
+ * ciphertext, a missing key or a broken history.
  */
 export async function checkOwnEntry(
   input: Readonly<{
     client: SprClient;
     settings: Address;
     record: KeyRecord;
+    upload: Address;
     member: Member;
   }>,
 ): Promise<void> {
@@ -205,10 +208,14 @@ export async function checkOwnEntry(
   if (record.settings !== input.settings) {
     throw new Error(`the key record belongs to ${record.settings}`);
   }
-  const previous = await fetchPublishedKeyRecord(
-    input.client,
-    await vaultAddress(input.settings),
+  const vault = await vaultAddress(input.settings);
+  await checkUploadedRecord(
+    input.client.solanaRpc,
+    vault,
+    input.upload,
+    encodeKeyRecord(record),
   );
+  const previous = await fetchPublishedKeyRecord(input.client, vault);
   checkKeyHistory(record, previous?.record);
   const secrets = recoverSharedSecrets(
     record,
@@ -326,12 +333,12 @@ function sortedSigners(signers: readonly NewSigner[]): SmartAccountSigner[] {
 
 /**
  * Squads `executeTransactionSyncV2` with an inner user registry `register`
- * of the record's public keys and publication of its uploaded buffer,
+ * of the record's public keys and the first publication of its upload,
  * both signed by the vault. The vault pays the rent of its user registry
- * record and storage head, so it needs SOL; the upload's payer funded the
- * buffer. Each approver runs `checkOwnEntry` on `record` first. `register` fails
- * on chain once the vault is registered, so a second Register cannot replace
- * the keys.
+ * record and storage pointer, so it needs SOL; the upload's payer funded the
+ * record. Each approver runs `checkOwnEntry` on `record` and the upload
+ * first. `register` fails on chain once the vault is registered, so a second
+ * Register cannot replace the keys.
  */
 export async function registerVaultInstruction(
   input: Readonly<{
@@ -339,7 +346,7 @@ export async function registerVaultInstruction(
     settings: Address;
     approvers: readonly TransactionSigner[];
     record: KeyRecord;
-    buffer: Address;
+    upload: Pick<RecordUpload, "address" | "refund">;
   }>,
 ): Promise<Instruction> {
   const decoded = await checkApprovers(
@@ -365,12 +372,13 @@ export async function registerVaultInstruction(
     approvers: input.approvers,
     inner: [
       await registerVaultKeysInstruction(vault, input.record),
-      await applyKeyRecordInstruction(
+      ...(await publishKeyRecordInstructions(
+        input.client.solanaRpc,
         vault,
-        input.buffer,
+        input.upload,
         undefined,
         input.record,
-      ),
+      )),
     ],
   });
 }
@@ -394,10 +402,10 @@ async function checkApprovers(
 
 export interface Rotation {
   readonly record: KeyRecord;
-  /** Send these upload instructions before the final atomic transaction. */
+  /** Send these upload transactions before the final atomic transaction. */
   readonly upload: RecordUpload;
   /**
-   * In order: the user registry `update_keys` and the storage `apply` of the
+   * In order: the user registry `update_keys` and the publication of the
    * uploaded record, which closes the previous record, then the settings
    * change, if any.
    */
@@ -498,7 +506,6 @@ export async function rotateSmartAccount(
     const vault = await vaultAddress(input.settings);
     const upload = await prepareKeyRecordUpload({
       owner: vault,
-      previous: published.address,
       payer: input.payer,
       refund: input.refund,
       record: newRecord,
@@ -509,12 +516,13 @@ export async function rotateSmartAccount(
         approvers: input.approvers,
         inner: [
           await updateKeysInstruction(vault, newRecord.sharedViewingPublicKey),
-          await applyKeyRecordInstruction(
+          ...(await publishKeyRecordInstructions(
+            input.client.solanaRpc,
             vault,
-            upload.address,
+            upload,
             published,
             newRecord,
-          ),
+          )),
         ],
       }),
     ];

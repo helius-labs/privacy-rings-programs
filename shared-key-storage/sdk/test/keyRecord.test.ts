@@ -22,10 +22,10 @@ import {
 import { currentKeyRecord, type VaultRegistry } from "../src/registry.js";
 import { checkOwnEntry, memberFromKeypair } from "../src/smartAccount.js";
 import { vaultAddress } from "../src/squads.js";
-import { EMPTY_RECORD_ADDRESS } from "../src/storage.js";
 import {
   accountClient,
   publish,
+  upload,
   type FakeAccounts,
 } from "./storageAccounts.js";
 
@@ -44,8 +44,9 @@ async function settingsAddress(): Promise<Address> {
 }
 
 /**
- * An approver's `checkOwnEntry` against a chain whose storage head holds
- * `published` for the vault of `settings`, or no head at all.
+ * An approver's `checkOwnEntry` of `record`, uploaded and frozen under the
+ * vault of `settings`, against a chain whose storage pointer names
+ * `published` for that vault, or no pointer at all.
  */
 async function approve(
   record: KeyRecord,
@@ -59,15 +60,21 @@ async function approve(
     await publish(accounts, {
       owner: vault,
       record: await settingsAddress(),
-      payer: vault,
-      previous: EMPTY_RECORD_ADDRESS,
+      refund: vault,
       bytes: encodeKeyRecord(published),
     });
   }
+  const uploaded = await settingsAddress();
+  upload(accounts, {
+    owner: await vaultAddress(settings),
+    record: uploaded,
+    bytes: encodeKeyRecord(record),
+  });
   await checkOwnEntry({
     client: accountClient(accounts),
     settings,
     record,
+    upload: uploaded,
     member: memberFromKeypair(approver.keypair),
   });
 }
@@ -342,7 +349,7 @@ describe("key record", () => {
     const first = recordFor(await settingsAddress(), [alice]);
     const second = rotateRecord(first, [alice]);
     const third = rotateRecord(second, [alice]);
-    // `third` extends `second`, but the vault's head still holds `first`.
+    // `third` extends `second`, but the vault's pointer still names `first`.
     await approve(third.record, alice, second.record);
     await assert.rejects(
       approve(third.record, alice, first.record),

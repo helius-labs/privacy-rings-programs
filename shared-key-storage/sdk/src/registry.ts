@@ -23,11 +23,12 @@ import {
   type KeyRecord,
 } from "./keyRecord.js";
 import {
-  applyRecordInstruction,
   fetchPublishedRecord,
   prepareRecordUpload,
+  publishRecordInstructions,
   type Predecessor,
   type RecordUpload,
+  type StorageRpc,
 } from "./storage.js";
 
 const UPDATE_KEYS = 2;
@@ -45,7 +46,7 @@ export interface VaultRegistry {
   readonly current: KeyRecordPublication | undefined;
 }
 
-/** The vault's published key record read from its storage head, if any. */
+/** The vault's published key record read through its storage pointer, if any. */
 export async function fetchPublishedKeyRecord(
   client: SprClient,
   vault: Address,
@@ -70,7 +71,7 @@ export async function fetchVaultRegistry(
 }
 
 /**
- * The current key record: the one the vault's storage head points to. It
+ * The current key record: the one the vault's storage pointer names. It
  * must belong to `settings`, name exactly the Squads signers, and hold the
  * registered viewing key; a Squads transaction that changed the signers
  * outside the rotate flow breaks the last two.
@@ -99,15 +100,14 @@ export function currentKeyRecord(
 }
 
 /**
- * Prepare upload instructions; send each before submitting register or
+ * Prepare upload transactions; send each before submitting register or
  * rotate. `payer` funds the upload; `refund`, the payer by default, gets the
  * rent back when a later rotation closes it, or when the payer sends
- * `closeInstruction` while it is unpublished.
+ * `closeInstruction` before the upload's last transaction.
  */
 export function prepareKeyRecordUpload(
   input: Readonly<{
     owner: Address;
-    previous: Address;
     payer: TransactionSigner;
     refund?: Address;
     record: KeyRecord;
@@ -158,19 +158,22 @@ export async function updateKeysInstruction(
 }
 
 /**
- * The vault publishes the uploaded record after checking its exact bytes and
- * closes `predecessor`, undefined for the first record.
+ * The vault's publication of the uploaded record: points the vault's storage
+ * pointer at it and closes `predecessor`, undefined for the first record.
+ * Checks first that the upload holds exactly `record` and is frozen under the
+ * vault.
  */
-export function applyKeyRecordInstruction(
+export function publishKeyRecordInstructions(
+  rpc: StorageRpc,
   owner: Address,
-  buffer: Address,
+  upload: Pick<RecordUpload, "address" | "refund">,
   predecessor: Predecessor | undefined,
   record: KeyRecord,
-): Promise<Instruction> {
-  return applyRecordInstruction(
+): Promise<Instruction[]> {
+  return publishRecordInstructions(rpc, {
     owner,
-    buffer,
+    upload,
     predecessor,
-    encodeKeyRecord(record),
-  );
+    bytes: encodeKeyRecord(record),
+  });
 }

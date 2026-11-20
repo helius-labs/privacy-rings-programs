@@ -1,18 +1,20 @@
 /**
- * Publishes the wallet's first record.
+ * Publishes the wallet's first record on the SPL Record program.
  *
- * 1. Upload the bytes in chunks into a fresh buffer account.
- * 2. Apply the buffer: the program creates the head PDA `[b"head", wallet]`,
- *    seals the buffer and points the head at it with revision 1.
+ * 1. Upload: create a Record account, write the bytes in chunks, then hand
+ *    its authority to the wallet, which freezes the bytes.
+ * 2. Publish: create the wallet's pointer at
+ *    `createWithSeed(wallet, "key-record-pointer", Record)` and point it at
+ *    the record with revision 1 and the record's hash.
  *
  * Run: pnpm create-record [file]
  */
 import {
-  EMPTY_RECORD_ADDRESS,
-  applyRecordInstruction,
+  checkUploadedRecord,
   fetchPublishedRecord,
   prepareRecordUpload,
-  storageHeadAddress,
+  publishRecordInstructions,
+  storagePointerAddress,
 } from "@heliuslabs/shared-key-storage";
 import { recordBytes, send, setup, upload } from "./common.js";
 
@@ -27,28 +29,28 @@ if ((await fetchPublishedRecord(rpc, wallet.address)) !== undefined) {
   );
 }
 
-// No predecessor: this is the first record for this owner.
 const prepared = await prepareRecordUpload({
   owner: wallet.address,
-  previous: EMPTY_RECORD_ADDRESS,
   payer: wallet,
   bytes,
 });
 console.log(`uploading ${bytes.length} bytes to ${prepared.address}`);
-await upload(rpc, wallet, prepared.instructions);
+await upload(rpc, wallet, prepared.transactions);
 
-// The owner signs apply, which binds the hash of exactly these bytes.
-const apply = await applyRecordInstruction(
-  wallet.address,
-  prepared.address,
-  undefined,
+// The owner checks the frozen upload, then publishes it. No predecessor:
+// this is the first record for this owner.
+await checkUploadedRecord(rpc, wallet.address, prepared.address, bytes);
+const publish = await publishRecordInstructions(rpc, {
+  owner: wallet.address,
+  upload: prepared,
+  predecessor: undefined,
   bytes,
-);
-console.log(`applied: ${await send(rpc, wallet, [apply])}`);
+});
+console.log(`published: ${await send(rpc, wallet, publish)}`);
 
 const published = await fetchPublishedRecord(rpc, wallet.address);
 if (published === undefined) throw new Error("record was not published");
-console.log(`head:     ${await storageHeadAddress(wallet.address)}`);
+console.log(`pointer:  ${await storagePointerAddress(wallet.address)}`);
 console.log(`record:   ${published.address}`);
 console.log(`revision: ${published.revision}`);
 console.log(`content:  ${new TextDecoder().decode(published.bytes)}`);

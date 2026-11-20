@@ -1,15 +1,32 @@
-/** Chunked uploads and atomic replacement through a small head PDA. */
+/**
+ * Key-record storage on the SPL Record program, with no custom program.
+ *
+ * - A record is a Record account: a 33-byte header (version, authority) and
+ *   the record bytes. A sponsor creates it, writes it in chunks and finally
+ *   hands its authority to the owner, which freezes the bytes.
+ * - The owner's pointer is a second Record account at
+ *   `createWithSeed(owner, POINTER_SEED, Record)`, owned by the owner. It names
+ *   the current record, its revision, the SHA-256 of its bytes and the
+ *   destination that gets its rent back when it is replaced.
+ * - Publication is a few instructions the owner signs in one transaction:
+ *   write the pointer and close the replaced record.
+ *
+ * The Record program enforces only "the authority writes and closes". Every
+ * other rule lives here: readers check the pointer's owner and authority, the
+ * record's authority and the hash before trusting a record.
+ */
 import { createHash } from "node:crypto";
 import {
   AccountRole,
   address,
+  createAddressWithSeed,
   fetchEncodedAccount,
   generateKeyPairSigner,
   getAddressDecoder,
   getAddressEncoder,
-  getProgramDerivedAddress,
-  type Address,
+  type AccountMeta,
   type AccountSignerMeta,
+  type Address,
   type GetAccountInfoApi,
   type Instruction,
   type MaybeEncodedAccount,
@@ -19,132 +36,139 @@ import {
 import { ByteReader, ByteWriter, bytesEqual } from "./bytes.js";
 import { SYSTEM_PROGRAM_ADDRESS } from "./squads.js";
 
-export const STORAGE_PROGRAM_ADDRESS = address(
-  "Stor9L8wQBAGcAcoUcADt5sWYYaEA65Ws2Cgt5UUqXj",
+/** The SPL Record program (mainnet and devnet). */
+export const RECORD_PROGRAM_ADDRESS = address(
+  "recr1L3PCGKLbckBqMNcJhuuyU1zgo8nBhfLVsJNwr5",
 );
+/** Record account header: version (1) and authority. */
+export const RECORD_HEADER_SIZE = 1 + 32;
 /**
- * Every chunk but the last is exactly this long (program `CHUNK_LEN`), so the
- * approved hash depends only on the bytes and one `store` fits a 1,232-byte
- * transaction.
+ * Bytes per `Write`, so each upload transaction stays under 1,232 bytes with
+ * compute budget instructions and a separate fee payer.
  */
 export const STORAGE_CHUNK_SIZE = 768;
-/**
- * `STORBUF1`, sealed, owner, rent payer, refund destination, predecessor,
- * total length, data hash.
- */
-export const BUFFER_HEADER_SIZE = 8 + 1 + 32 + 32 + 32 + 32 + 4 + 32;
-export const MAX_RECORD_SIZE = 10 * 1024 * 1024 - BUFFER_HEADER_SIZE;
-export const EMPTY_RECORD_ADDRESS = SYSTEM_PROGRAM_ADDRESS;
-const STORE = 1;
-const APPLY = 2;
-const CLOSE_BUFFER = 3;
-const CREATE_BUFFER = 4;
+export const MAX_RECORD_SIZE = 10 * 1024 * 1024 - RECORD_HEADER_SIZE;
+/** Seed of the owner's pointer, `createWithSeed(owner, POINTER_SEED, Record)`. */
+export const POINTER_SEED = "key-record-pointer";
+/** `SKRPTR01`, current record, revision, data hash, refund destination. */
+export const POINTER_DATA_SIZE = 8 + 32 + 8 + 32 + 32;
+
+const RECORD_VERSION = 1;
+const RECORD_INITIALIZE = 0;
+const RECORD_WRITE = 1;
+const RECORD_SET_AUTHORITY = 2;
+const RECORD_CLOSE = 3;
+const SYSTEM_CREATE_ACCOUNT = 0;
+const SYSTEM_TRANSFER = 2;
+const SYSTEM_ALLOCATE_WITH_SEED = 9;
+const SYSTEM_ASSIGN_WITH_SEED = 10;
 const addressEncoder = getAddressEncoder();
 const addressDecoder = getAddressDecoder();
 const utf8 = new TextEncoder();
-const BUFFER_DISCRIMINATOR = utf8.encode("STORBUF1");
-const HEAD_DISCRIMINATOR = utf8.encode("STORHEAD");
+const POINTER_MAGIC = utf8.encode("SKRPTR01");
 
-export interface StoredRecord {
-  readonly sealed: boolean;
-  readonly owner: Address;
-  /** Paid the rent and signs the cancel. */
-  readonly payer: Address;
-  /** Receives the rent when the upload is cancelled or superseded. */
-  readonly refund: Address;
-  /** The apply precondition; this predecessor is closed after replacement. */
-  readonly previous: Address;
-  readonly totalLength: number;
+/** What the owner's pointer says about its current record. */
+export interface StoragePointer {
+  readonly current: Address;
+  /** 1 for the first publication, incremented by every replacement. */
+  readonly revision: bigint;
+  /** SHA-256 of the current record's bytes. */
   readonly dataHash: Uint8Array;
-  readonly bytes: Uint8Array;
+  /** Receives the current record's rent when a replacement closes it. */
+  readonly refund: Address;
 }
 
 export interface RecordUpload {
+  /** The new record account. */
   readonly address: Address;
-  readonly instructions: readonly Instruction[];
-  /** Cancels the unpublished upload: the rent payer signs, the destination is refunded. */
+  /** Recorded in the pointer at publication; gets the rent back later. */
+  readonly refund: Address;
+  /**
+   * Send each entry as its own transaction, in order. The first creates the
+   * record, the last hands its authority to the owner and freezes the bytes.
+   */
+  readonly transactions: readonly (readonly Instruction[])[];
+  /**
+   * Cancels the upload before its last transaction: the payer signs and the
+   * refund destination gets the rent. Afterwards only the owner can close it.
+   */
   readonly closeInstruction: Instruction;
 }
 
-export interface StorageHead {
-  readonly current: Address;
-  readonly revision: bigint;
-}
-
-/** The published record an apply replaces: what it checks and what it closes. */
+/** The published record a publication replaces and closes. */
 export interface Predecessor {
   readonly address: Address;
   readonly revision: bigint;
-  /** The predecessor's refund destination, credited when apply closes it. */
+  /** The predecessor's refund destination, credited when it is closed. */
   readonly refund: Address;
 }
 
-/** The current published record of an owner, read from its head. */
+/** The current published record of an owner, read through its pointer. */
 export interface PublishedRecord extends Predecessor {
   readonly bytes: Uint8Array;
-}
-
-export async function storageHeadAddress(owner: Address): Promise<Address> {
-  const [head] = await getProgramDerivedAddress({
-    programAddress: STORAGE_PROGRAM_ADDRESS,
-    seeds: [utf8.encode("head"), addressEncoder.encode(owner)],
-  });
-  return head;
-}
-
-export function decodeStorageHead(bytes: Uint8Array): StorageHead {
-  const reader = new ByteReader(bytes, "storage head");
-  if (!bytesEqual(reader.bytes(8, "discriminator"), HEAD_DISCRIMINATOR)) {
-    throw new Error("not a storage head");
-  }
-  const current = addressDecoder.decode(reader.bytes(32, "current record"));
-  const revision = reader.u64("revision");
-  reader.end();
-  if (current === EMPTY_RECORD_ADDRESS || revision === 0n)
-    throw new Error("empty storage head");
-  return { current, revision };
-}
-
-export function decodeStoredRecord(bytes: Uint8Array): StoredRecord {
-  const reader = new ByteReader(bytes, "stored record");
-  if (!bytesEqual(reader.bytes(8, "discriminator"), BUFFER_DISCRIMINATOR)) {
-    throw new Error("not a stored record");
-  }
-  const state = reader.u8("sealed");
-  if (state !== 0 && state !== 1)
-    throw new Error("invalid stored record state");
-  const owner = addressDecoder.decode(reader.bytes(32, "owner"));
-  const payer = addressDecoder.decode(reader.bytes(32, "payer"));
-  const refund = addressDecoder.decode(reader.bytes(32, "refund"));
-  const previous = addressDecoder.decode(reader.bytes(32, "previous"));
-  const totalLength = reader.u32("total length");
-  const dataHash = reader.bytes(32, "data hash");
-  const uploaded = reader.bytes(bytes.length - BUFFER_HEADER_SIZE, "bytes");
-  reader.end();
-  if (
-    totalLength === 0 ||
-    totalLength > MAX_RECORD_SIZE ||
-    uploaded.length > totalLength ||
-    (state === 1 && uploaded.length !== totalLength)
-  ) {
-    throw new Error("invalid stored record length");
-  }
-  return {
-    sealed: state === 1,
-    owner,
-    payer,
-    refund,
-    previous,
-    totalLength,
-    dataHash,
-    bytes: uploaded,
-  };
 }
 
 /** Any `@solana/kit` RPC that can read accounts. */
 export type StorageRpc = Rpc<GetAccountInfoApi>;
 
-/** Reads at `confirmed`, so a record applied in a confirmed transaction is visible. */
+/** The rent-exempt minimum for `space` bytes at the default rent rate. */
+export function rentExemptLamports(space: number): bigint {
+  return BigInt(space + 128) * 6960n;
+}
+
+export function storagePointerAddress(owner: Address): Promise<Address> {
+  return createAddressWithSeed({
+    baseAddress: owner,
+    programAddress: RECORD_PROGRAM_ADDRESS,
+    seed: POINTER_SEED,
+  });
+}
+
+/** SHA-256 of the record bytes; the pointer stores it. */
+export function storageDataHash(bytes: Uint8Array): Uint8Array {
+  return Uint8Array.from(createHash("sha256").update(bytes).digest());
+}
+
+/** Splits a Record account into its authority and data, checking the version. */
+export function decodeRecordAccount(bytes: Uint8Array): {
+  readonly authority: Address;
+  readonly data: Uint8Array;
+} {
+  const reader = new ByteReader(bytes, "record account");
+  if (reader.u8("version") !== RECORD_VERSION) {
+    throw new Error("not an initialized record account");
+  }
+  const authority = addressDecoder.decode(reader.bytes(32, "authority"));
+  const data = reader.bytes(bytes.length - RECORD_HEADER_SIZE, "data");
+  reader.end();
+  return { authority, data };
+}
+
+export function encodeStoragePointer(pointer: StoragePointer): Uint8Array {
+  return new ByteWriter()
+    .bytes(POINTER_MAGIC)
+    .bytes(addressEncoder.encode(pointer.current))
+    .u64(pointer.revision)
+    .bytes(pointer.dataHash)
+    .bytes(addressEncoder.encode(pointer.refund))
+    .finish();
+}
+
+export function decodeStoragePointer(data: Uint8Array): StoragePointer {
+  const reader = new ByteReader(data, "storage pointer");
+  if (!bytesEqual(reader.bytes(8, "magic"), POINTER_MAGIC)) {
+    throw new Error("not a storage pointer");
+  }
+  const current = addressDecoder.decode(reader.bytes(32, "current record"));
+  const revision = reader.u64("revision");
+  const dataHash = reader.bytes(32, "data hash");
+  const refund = addressDecoder.decode(reader.bytes(32, "refund"));
+  reader.end();
+  if (revision === 0n) throw new Error("storage pointer has no revision");
+  return { current, revision, dataHash, refund };
+}
+
+/** Reads at `confirmed`, so a record published in a confirmed transaction is visible. */
 function fetchAccount(
   rpc: StorageRpc,
   account: Address,
@@ -152,77 +176,137 @@ function fetchAccount(
   return fetchEncodedAccount(rpc, account, { commitment: "confirmed" });
 }
 
-export async function fetchStorageHead(
+/** A Record account whose authority is `authority`, or an error. */
+async function fetchRecordData(
   rpc: StorageRpc,
-  owner: Address,
-): Promise<StorageHead | undefined> {
-  const account = await fetchAccount(rpc, await storageHeadAddress(owner));
-  if (!account.exists) return undefined;
-  if (account.programAddress !== STORAGE_PROGRAM_ADDRESS)
-    throw new Error("wrong storage head owner");
-  return decodeStorageHead(account.data);
+  account: Address,
+  authority: Address,
+  label: string,
+): Promise<Uint8Array> {
+  const fetched = await fetchAccount(rpc, account);
+  if (!fetched.exists || fetched.programAddress !== RECORD_PROGRAM_ADDRESS) {
+    throw new Error(`missing ${label} or not a Record account`);
+  }
+  const decoded = decodeRecordAccount(fetched.data);
+  if (decoded.authority !== authority) {
+    throw new Error(`${label} is not controlled by ${authority}`);
+  }
+  return decoded.data;
 }
 
-export async function fetchStoredRecord(
+export async function fetchStoragePointer(
   rpc: StorageRpc,
-  record: Address,
-): Promise<StoredRecord> {
-  const account = await fetchAccount(rpc, record);
-  if (!account.exists || account.programAddress !== STORAGE_PROGRAM_ADDRESS) {
-    throw new Error("missing record or wrong storage program owner");
+  owner: Address,
+): Promise<StoragePointer | undefined> {
+  const pointer = await storagePointerAddress(owner);
+  const account = await fetchAccount(rpc, pointer);
+  if (!account.exists || account.programAddress !== RECORD_PROGRAM_ADDRESS) {
+    return undefined;
   }
-  return decodeStoredRecord(account.data);
+  return decodeStoragePointer(
+    await fetchRecordData(rpc, pointer, owner, "storage pointer"),
+  );
 }
 
 /**
- * `owner`'s current published record, or undefined before its first apply.
- * The head points only at sealed records of its owner; anything else is an
- * invalid account state.
+ * `owner`'s current published record, or undefined before its first
+ * publication. The record must be frozen under the owner and hash to the
+ * pointer's data hash; anything else is an invalid state.
  */
 export async function fetchPublishedRecord(
   rpc: StorageRpc,
   owner: Address,
 ): Promise<PublishedRecord | undefined> {
-  const head = await fetchStorageHead(rpc, owner);
-  if (head === undefined) return undefined;
-  const stored = await fetchStoredRecord(rpc, head.current);
-  if (!stored.sealed || stored.owner !== owner) {
-    throw new Error(
-      "the storage head points to an unpublished or foreign record",
-    );
+  const pointer = await fetchStoragePointer(rpc, owner);
+  if (pointer === undefined) return undefined;
+  const bytes = await fetchRecordData(
+    rpc,
+    pointer.current,
+    owner,
+    "current record",
+  );
+  if (!bytesEqual(storageDataHash(bytes), pointer.dataHash)) {
+    throw new Error("the current record does not match its pointer's hash");
   }
   return {
-    address: head.current,
-    revision: head.revision,
-    refund: stored.refund,
-    bytes: stored.bytes,
+    address: pointer.current,
+    revision: pointer.revision,
+    refund: pointer.refund,
+    bytes,
   };
 }
 
-/** The hash apply approves: SHA-256 chained over the canonical chunks. */
-export function storageDataHash(bytes: Uint8Array): Uint8Array {
-  let dataHash = new Uint8Array(32);
-  for (let offset = 0; offset < bytes.length; offset += STORAGE_CHUNK_SIZE) {
-    dataHash = Uint8Array.from(
-      createHash("sha256")
-        .update(dataHash)
-        .update(bytes.subarray(offset, offset + STORAGE_CHUNK_SIZE))
-        .digest(),
-    );
-  }
-  return dataHash;
+function recordInstruction(
+  accounts: readonly AccountMeta[],
+  data: Uint8Array,
+): Instruction {
+  return { programAddress: RECORD_PROGRAM_ADDRESS, accounts, data };
+}
+
+function recordInitialize(record: Address, authority: Address): Instruction {
+  return recordInstruction(
+    [
+      { address: record, role: AccountRole.WRITABLE },
+      { address: authority, role: AccountRole.READONLY },
+    ],
+    Uint8Array.of(RECORD_INITIALIZE),
+  );
+}
+
+function recordWrite(
+  record: Address,
+  authority: AccountMeta,
+  offset: number,
+  bytes: Uint8Array,
+): Instruction {
+  return recordInstruction(
+    [{ address: record, role: AccountRole.WRITABLE }, authority],
+    new ByteWriter()
+      .u8(RECORD_WRITE)
+      .u64(BigInt(offset))
+      .u32(bytes.length)
+      .bytes(bytes)
+      .finish(),
+  );
+}
+
+function recordClose(
+  record: Address,
+  authority: AccountMeta,
+  destination: Address,
+): Instruction {
+  return recordInstruction(
+    [
+      { address: record, role: AccountRole.WRITABLE },
+      authority,
+      { address: destination, role: AccountRole.WRITABLE },
+    ],
+    Uint8Array.of(RECORD_CLOSE),
+  );
+}
+
+function systemInstruction(
+  accounts: readonly AccountMeta[],
+  data: Uint8Array,
+): Instruction {
+  return { programAddress: SYSTEM_PROGRAM_ADDRESS, accounts, data };
+}
+
+/** bincode `String`: u64 length, then UTF-8 bytes. */
+function seedBytes(seed: string): Uint8Array {
+  const bytes = utf8.encode(seed);
+  return new ByteWriter().u64(BigInt(bytes.length)).bytes(bytes).finish();
 }
 
 /**
- * Upload separately; publication requires the owner's signature in apply.
- * `payer` funds the buffer and can cancel it. `refund`, the payer by default,
- * receives the rent when the upload is cancelled or a later apply closes it.
- * It must be a plain System Program account that is not a deployed program.
+ * Upload separately; publication requires the owner. `payer` funds the record
+ * and signs every transaction. `refund`, the payer by default, gets the rent
+ * back when a later publication replaces this record or when the payer cancels
+ * it before the last transaction. It must be a plain wallet, not a program.
  */
 export async function prepareRecordUpload(
   input: Readonly<{
     owner: Address;
-    previous: Address;
     payer: TransactionSigner;
     refund?: Address;
     bytes: Uint8Array;
@@ -233,108 +317,172 @@ export async function prepareRecordUpload(
       "record length must be between 1 byte and the account limit",
     );
   }
-  const buffer = await generateKeyPairSigner();
-  const bufferAccount = {
-    address: buffer.address,
-    role: AccountRole.WRITABLE_SIGNER,
-    signer: buffer,
-  } satisfies AccountSignerMeta;
-  const payerAccount = {
+  const record = await generateKeyPairSigner();
+  const payer = {
     address: input.payer.address,
     role: AccountRole.WRITABLE_SIGNER,
     signer: input.payer,
   } satisfies AccountSignerMeta;
-  // Cancelling needs only the payer's signature; the refund goes to `refund`.
-  const cancelSigner = {
+  // The payer is the record's authority until the last transaction.
+  const authority = {
     address: input.payer.address,
     role: AccountRole.READONLY_SIGNER,
     signer: input.payer,
   } satisfies AccountSignerMeta;
   const refund = input.refund ?? input.payer.address;
-  const instructions: Instruction[] = [];
+  const space = RECORD_HEADER_SIZE + input.bytes.length;
+  const transactions: Instruction[][] = [
+    [
+      systemInstruction(
+        [
+          payer,
+          {
+            address: record.address,
+            role: AccountRole.WRITABLE_SIGNER,
+            signer: record,
+          } satisfies AccountSignerMeta,
+        ],
+        new ByteWriter()
+          .u32(SYSTEM_CREATE_ACCOUNT)
+          .u64(rentExemptLamports(space))
+          .u64(BigInt(space))
+          .bytes(addressEncoder.encode(RECORD_PROGRAM_ADDRESS))
+          .finish(),
+      ),
+      recordInitialize(record.address, input.payer.address),
+    ],
+  ];
   for (
     let offset = 0;
     offset < input.bytes.length;
     offset += STORAGE_CHUNK_SIZE
   ) {
     const chunk = input.bytes.subarray(offset, offset + STORAGE_CHUNK_SIZE);
-    instructions.push({
-      programAddress: STORAGE_PROGRAM_ADDRESS,
-      accounts: [
-        bufferAccount,
-        payerAccount,
-        { address: SYSTEM_PROGRAM_ADDRESS, role: AccountRole.READONLY },
-        { address: refund, role: AccountRole.READONLY },
-      ],
-      // The first chunk creates the buffer; later chunks append to it.
-      data: new ByteWriter()
-        .u8(offset === 0 ? CREATE_BUFFER : STORE)
-        .bytes(addressEncoder.encode(input.owner))
-        .bytes(addressEncoder.encode(input.previous))
-        .u32(input.bytes.length)
-        .u32(offset)
-        .u32(chunk.length)
-        .bytes(chunk)
-        .finish(),
-    });
+    transactions.push([recordWrite(record.address, authority, offset, chunk)]);
   }
+  // Handing the authority to the owner freezes the bytes for approval.
+  transactions
+    .at(-1)
+    ?.push(
+      recordInstruction(
+        [
+          { address: record.address, role: AccountRole.WRITABLE },
+          authority,
+          { address: input.owner, role: AccountRole.READONLY },
+        ],
+        Uint8Array.of(RECORD_SET_AUTHORITY),
+      ),
+    );
   return {
-    address: buffer.address,
-    instructions,
-    closeInstruction: {
-      programAddress: STORAGE_PROGRAM_ADDRESS,
-      accounts: [
-        { address: buffer.address, role: AccountRole.WRITABLE },
-        cancelSigner,
-        { address: refund, role: AccountRole.WRITABLE },
-      ],
-      data: Uint8Array.of(CLOSE_BUFFER),
-    },
+    address: record.address,
+    refund,
+    transactions,
+    closeInstruction: recordClose(record.address, authority, refund),
   };
 }
 
 /**
- * Publishes exactly the bytes the owner approved, with stale-head protection.
- * `predecessor` is the current published record, undefined for the first
- * publication; apply closes it and refunds its recorded destination.
+ * Throws unless `upload` is complete, frozen under `owner` and holds exactly
+ * `bytes`. Approvers run this before co-signing a publication: once the owner
+ * is the authority only the owner can change the bytes, so what they checked
+ * is what gets published.
  */
-export async function applyRecordInstruction(
+export async function checkUploadedRecord(
+  rpc: StorageRpc,
   owner: Address,
-  buffer: Address,
-  predecessor: Predecessor | undefined,
+  upload: Address,
   bytes: Uint8Array,
-): Promise<Instruction> {
-  if (bytes.length === 0 || bytes.length > MAX_RECORD_SIZE)
-    throw new Error("invalid record length");
-  // The first publication closes nothing: both slots hold the storage
-  // program's own address, which the program reads as "no account".
-  const closed =
-    predecessor === undefined
+): Promise<void> {
+  const uploaded = await fetchRecordData(rpc, upload, owner, "uploaded record");
+  if (!bytesEqual(uploaded, bytes)) {
+    throw new Error("the uploaded record does not hold the approved bytes");
+  }
+}
+
+/**
+ * The owner's publication of an uploaded record: the instructions it signs in
+ * one transaction. The first publication creates the pointer; a replacement
+ * rewrites it and closes `predecessor`, refunding its recorded destination (or
+ * the owner, if that destination has since become a program). The pointer
+ * records the hash of `bytes`, so readers reject anything else; approvers run
+ * `checkUploadedRecord` first.
+ */
+export async function publishRecordInstructions(
+  rpc: StorageRpc,
+  input: Readonly<{
+    owner: Address;
+    upload: Pick<RecordUpload, "address" | "refund">;
+    predecessor: Predecessor | undefined;
+    bytes: Uint8Array;
+  }>,
+): Promise<Instruction[]> {
+  const { owner, upload, predecessor, bytes } = input;
+  if (predecessor?.address === upload.address) {
+    throw new Error("cannot replace a record with itself");
+  }
+  const ownerSigner = { address: owner, role: AccountRole.READONLY_SIGNER };
+  const pointer = await storagePointerAddress(owner);
+  const pointerData = encodeStoragePointer({
+    current: upload.address,
+    revision: (predecessor?.revision ?? 0n) + 1n,
+    dataHash: storageDataHash(bytes),
+    refund: upload.refund,
+  });
+  if (predecessor !== undefined) {
+    const refund = await fetchAccount(rpc, predecessor.refund);
+    const recipient =
+      refund.exists && refund.executable ? owner : predecessor.refund;
+    return [
+      recordWrite(pointer, ownerSigner, 0, pointerData),
+      recordClose(predecessor.address, ownerSigner, recipient),
+    ];
+  }
+  // Allocate and assign instead of create, so lamports someone sent to the
+  // pointer address cannot block the first publication.
+  const existing = await fetchAccount(rpc, pointer);
+  if (existing.exists && existing.programAddress !== SYSTEM_PROGRAM_ADDRESS) {
+    throw new Error("the owner already has a storage pointer");
+  }
+  const space = RECORD_HEADER_SIZE + POINTER_DATA_SIZE;
+  const missing =
+    rentExemptLamports(space) - (existing.exists ? existing.lamports : 0n);
+  const fundingOwner = { address: owner, role: AccountRole.WRITABLE_SIGNER };
+  const seeded = [
+    { address: pointer, role: AccountRole.WRITABLE },
+    ownerSigner,
+  ];
+  const seed = seedBytes(POINTER_SEED);
+  const ownerBytes = addressEncoder.encode(owner);
+  const programBytes = addressEncoder.encode(RECORD_PROGRAM_ADDRESS);
+  return [
+    ...(missing > 0n
       ? [
-          { address: STORAGE_PROGRAM_ADDRESS, role: AccountRole.READONLY },
-          { address: STORAGE_PROGRAM_ADDRESS, role: AccountRole.READONLY },
+          systemInstruction(
+            [fundingOwner, { address: pointer, role: AccountRole.WRITABLE }],
+            new ByteWriter().u32(SYSTEM_TRANSFER).u64(missing).finish(),
+          ),
         ]
-      : [
-          { address: predecessor.address, role: AccountRole.WRITABLE },
-          { address: predecessor.refund, role: AccountRole.WRITABLE },
-        ];
-  return {
-    programAddress: STORAGE_PROGRAM_ADDRESS,
-    accounts: [
-      { address: await storageHeadAddress(owner), role: AccountRole.WRITABLE },
-      { address: buffer, role: AccountRole.WRITABLE },
-      { address: owner, role: AccountRole.READONLY_SIGNER },
-      { address: owner, role: AccountRole.WRITABLE_SIGNER },
-      { address: SYSTEM_PROGRAM_ADDRESS, role: AccountRole.READONLY },
-      ...closed,
-    ],
-    data: new ByteWriter()
-      .u8(APPLY)
-      .bytes(
-        addressEncoder.encode(predecessor?.address ?? EMPTY_RECORD_ADDRESS),
-      )
-      .u64(predecessor?.revision ?? 0n)
-      .bytes(storageDataHash(bytes))
-      .finish(),
-  };
+      : []),
+    systemInstruction(
+      seeded,
+      new ByteWriter()
+        .u32(SYSTEM_ALLOCATE_WITH_SEED)
+        .bytes(ownerBytes)
+        .bytes(seed)
+        .u64(BigInt(space))
+        .bytes(programBytes)
+        .finish(),
+    ),
+    systemInstruction(
+      seeded,
+      new ByteWriter()
+        .u32(SYSTEM_ASSIGN_WITH_SEED)
+        .bytes(ownerBytes)
+        .bytes(seed)
+        .bytes(programBytes)
+        .finish(),
+    ),
+    recordInitialize(pointer, owner),
+    recordWrite(pointer, ownerSigner, 0, pointerData),
+  ];
 }

@@ -6,7 +6,11 @@
 import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
 
-import { type Address, type TransactionSigner } from "@solana/kit";
+import {
+  fetchEncodedAccount,
+  type Address,
+  type TransactionSigner,
+} from "@solana/kit";
 import { SOL_MINT } from "@heliuslabs/spr";
 import type { SprClient } from "@heliuslabs/spr/client";
 import { ShieldedKeypair, initializePoseidon } from "@heliuslabs/spr/keypair";
@@ -21,9 +25,8 @@ import {
   type VaultRegistry,
 } from "../../src/registry.js";
 import {
-  EMPTY_RECORD_ADDRESS,
-  fetchStorageHead,
-  fetchStoredRecord,
+  decodeRecordAccount,
+  fetchStoragePointer,
   type RecordUpload,
 } from "../../src/storage.js";
 import {
@@ -44,7 +47,10 @@ import {
 } from "../../src/squads.js";
 import { networkSetup, send, syncedSolBalance, transferSol } from "./send.js";
 
-/** Partial uploads never change the active head; abandoned uploads are refunded. */
+/**
+ * Partial uploads never change the published pointer; uploads the payer still
+ * controls are cancelled and refunded afterwards.
+ */
 async function uploadRecord(
   client: SprClient,
   payer: TransactionSigner,
@@ -53,18 +59,25 @@ async function uploadRecord(
   t: TestContext,
 ): Promise<void> {
   t.after(async () => {
-    if ((await client.getAccount(upload.address)) === undefined) return;
-    if (!(await fetchStoredRecord(client.solanaRpc, upload.address)).sealed) {
+    const account = await fetchEncodedAccount(
+      client.solanaRpc,
+      upload.address,
+      { commitment: "confirmed" },
+    );
+    if (
+      account.exists &&
+      decodeRecordAccount(account.data).authority === payer.address
+    ) {
       await send(client, payer, [upload.closeInstruction]);
     }
   });
-  const previous = await fetchStorageHead(client.solanaRpc, owner);
-  for (const instruction of upload.instructions) {
-    await send(client, payer, [instruction]);
+  const previous = await fetchStoragePointer(client.solanaRpc, owner);
+  for (const instructions of upload.transactions) {
+    await send(client, payer, instructions);
     assert.deepEqual(
-      await fetchStorageHead(client.solanaRpc, owner),
+      await fetchStoragePointer(client.solanaRpc, owner),
       previous,
-      "upload leaves the active head unchanged",
+      "upload leaves the published pointer unchanged",
     );
   }
 }
@@ -161,7 +174,7 @@ async function vaultRegistry(client: SprClient, vault: Address) {
 }
 
 /**
- * The registry state after `upload` of `record` became the vault's head; the
+ * The registry state after `upload` of `record` became the vault's current record; the
  * upload's payer is its default refund destination.
  */
 function publishedRegistry(
@@ -224,30 +237,31 @@ test(
       [alice.signer.address, bob.signer.address].sort(),
     );
 
-    // Check, then Register: each approver opens its entry of record 0, and
-    // the vault registers the keys and sets the record as its registry data.
+    // Upload, check, then Register: each approver checks the frozen upload
+    // and opens its entry of record 0; the vault registers the keys and
+    // points its storage pointer at the record.
+    const firstUpload = await prepareKeyRecordUpload({
+      owner: created.vault,
+      payer,
+      record: created.record,
+    });
+    await uploadRecord(client, payer, created.vault, firstUpload, t);
     for (const approver of [alice, bob]) {
       await checkOwnEntry({
         client,
         settings: created.settings,
         record: created.record,
+        upload: firstUpload.address,
         member: approver,
       });
     }
-    const firstUpload = await prepareKeyRecordUpload({
-      owner: created.vault,
-      previous: EMPTY_RECORD_ADDRESS,
-      payer,
-      record: created.record,
-    });
-    await uploadRecord(client, payer, created.vault, firstUpload, t);
     await send(client, payer, [
       await registerVaultInstruction({
         client,
         settings: created.settings,
         approvers: [alice.signer, bob.signer],
         record: created.record,
-        buffer: firstUpload.address,
+        upload: firstUpload,
       }),
     ]);
     assert.deepEqual(
@@ -320,14 +334,16 @@ test(
       threshold: 2,
     });
     assert.equal(rotation.record.epoch, 1n);
-    // Approve: Alice stays a signer, so she checks her entry before signing.
+    // Approve: Alice stays a signer, so she checks the upload and her entry
+    // before signing.
+    await uploadRecord(client, payer, created.vault, rotation.upload, t);
     await checkOwnEntry({
       client,
       settings: created.settings,
       record: rotation.record,
+      upload: rotation.upload.address,
       member: alice,
     });
-    await uploadRecord(client, payer, created.vault, rotation.upload, t);
     await send(client, payer, rotation.instructions);
     const rotated = await fetchSettings(client, created.settings);
     assert.deepEqual(
@@ -434,13 +450,14 @@ test(
       threshold: 2,
     });
     assert.equal(keyOnly.instructions.length, 1);
+    await uploadRecord(client, payer, created.vault, keyOnly.upload, t);
     await checkOwnEntry({
       client,
       settings: created.settings,
       record: keyOnly.record,
+      upload: keyOnly.upload.address,
       member: alice,
     });
-    await uploadRecord(client, payer, created.vault, keyOnly.upload, t);
     await send(client, payer, keyOnly.instructions);
     assert.deepEqual(
       await vaultRegistry(client, created.vault),
@@ -496,7 +513,6 @@ test(
 
     const firstUpload = await prepareKeyRecordUpload({
       owner: created.vault,
-      previous: EMPTY_RECORD_ADDRESS,
       payer,
       record: created.record,
     });
@@ -506,7 +522,7 @@ test(
       settings: created.settings,
       approvers: [alice.signer, bob.signer],
       record: created.record,
-      buffer: firstUpload.address,
+      upload: firstUpload,
     });
     await send(client, payer, [register]);
 

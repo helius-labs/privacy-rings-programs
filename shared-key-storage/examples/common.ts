@@ -125,15 +125,15 @@ async function confirm(
   }
 }
 
-/** Sends each upload chunk in its own transaction, in order. */
+/** Sends each upload transaction, in order. */
 export async function upload(
   rpc: SolanaRpc,
   wallet: KeyPairSigner,
-  instructions: readonly Instruction[],
+  transactions: readonly (readonly Instruction[])[],
 ): Promise<void> {
-  for (const [index, instruction] of instructions.entries()) {
-    const signature = await send(rpc, wallet, [instruction]);
-    console.log(`  chunk ${index + 1}/${instructions.length}: ${signature}`);
+  for (const [index, instructions] of transactions.entries()) {
+    const signature = await send(rpc, wallet, instructions);
+    console.log(`  step ${index + 1}/${transactions.length}: ${signature}`);
   }
 }
 

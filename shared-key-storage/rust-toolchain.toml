@@ -1,4 +1,0 @@
-# Host toolchain for the program's tests: mollusk 0.17 pulls agave 4.4, which
-# needs rustc 1.98.1. `cargo build-sbf` uses its own platform-tools toolchain.
-[toolchain]
-channel = "1.98.1"

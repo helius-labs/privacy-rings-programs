@@ -2,7 +2,7 @@
   "name": "@heliuslabs/shared-key-storage",
   "version": "0.1.0",
   "private": true,
-  "description": "TypeScript SDK for the Shared Key Storage program and private Squads smart accounts",
+  "description": "TypeScript SDK for Shared Key Storage on the SPL Record program and private Squads smart accounts",
   "files": [
     "dist"
   ],
@@ -27,6 +27,7 @@
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
+    "litesvm": "1.6.2",
     "oxfmt": "^0.61.0",
     "tsx": "latest",
     "typescript": "^7.0.2"
