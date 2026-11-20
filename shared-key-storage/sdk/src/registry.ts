@@ -33,7 +33,7 @@ import {
 
 const UPDATE_KEYS = 2;
 
-/** The vault's published key record, with what the next apply binds and closes. */
+/** The vault's published key record, which the next publication replaces and closes. */
 export interface KeyRecordPublication extends Predecessor {
   readonly record: KeyRecord;
 }
@@ -160,8 +160,9 @@ export async function updateKeysInstruction(
 /**
  * The vault's publication of the uploaded record: points the vault's storage
  * pointer at it and closes `predecessor`, undefined for the first record.
- * Checks first that the upload holds exactly `record` and is frozen under the
- * vault.
+ * It does not read the upload: approvers run `checkOwnEntry` (or
+ * `checkUploadedRecord`) to confirm it holds exactly `record` and is frozen
+ * under the vault.
  */
 export function publishKeyRecordInstructions(
   rpc: StorageRpc,

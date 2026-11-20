@@ -198,14 +198,15 @@ export async function fetchStoragePointer(
   rpc: StorageRpc,
   owner: Address,
 ): Promise<StoragePointer | undefined> {
-  const pointer = await storagePointerAddress(owner);
-  const account = await fetchAccount(rpc, pointer);
+  const account = await fetchAccount(rpc, await storagePointerAddress(owner));
   if (!account.exists || account.programAddress !== RECORD_PROGRAM_ADDRESS) {
     return undefined;
   }
-  return decodeStoragePointer(
-    await fetchRecordData(rpc, pointer, owner, "storage pointer"),
-  );
+  const decoded = decodeRecordAccount(account.data);
+  if (decoded.authority !== owner) {
+    throw new Error(`storage pointer is not controlled by ${owner}`);
+  }
+  return decodeStoragePointer(decoded.data);
 }
 
 /**
@@ -302,7 +303,9 @@ function seedBytes(seed: string): Uint8Array {
  * Upload separately; publication requires the owner. `payer` funds the record
  * and signs every transaction. `refund`, the payer by default, gets the rent
  * back when a later publication replaces this record or when the payer cancels
- * it before the last transaction. It must be a plain wallet, not a program.
+ * it before the last transaction. Use a plain wallet: if it is a program or
+ * another program's account when a publication replaces this record, the
+ * owner gets the rent instead.
  */
 export async function prepareRecordUpload(
   input: Readonly<{
@@ -403,7 +406,7 @@ export async function checkUploadedRecord(
  * The owner's publication of an uploaded record: the instructions it signs in
  * one transaction. The first publication creates the pointer; a replacement
  * rewrites it and closes `predecessor`, refunding its recorded destination (or
- * the owner, if that destination has since become a program). The pointer
+ * the owner, if that destination is not a plain wallet). The pointer
  * records the hash of `bytes`, so readers reject anything else; approvers run
  * `checkUploadedRecord` first.
  */
@@ -429,9 +432,13 @@ export async function publishRecordInstructions(
     refund: upload.refund,
   });
   if (predecessor !== undefined) {
+    // Only a plain wallet can always be credited: a program or sysvar would
+    // fail the close and block every later replacement.
     const refund = await fetchAccount(rpc, predecessor.refund);
-    const recipient =
-      refund.exists && refund.executable ? owner : predecessor.refund;
+    const wallet =
+      !refund.exists ||
+      (refund.programAddress === SYSTEM_PROGRAM_ADDRESS && !refund.executable);
+    const recipient = wallet ? predecessor.refund : owner;
     return [
       recordWrite(pointer, ownerSigner, 0, pointerData),
       recordClose(predecessor.address, ownerSigner, recipient),

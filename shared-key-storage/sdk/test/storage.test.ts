@@ -182,7 +182,8 @@ describe("storage on the SPL Record program", () => {
       chain.wallet(),
       chain.wallet(),
     ]);
-    const bytes = recordBytes(2800);
+    // Whole chunks, so the last write is full and also hands over authority.
+    const bytes = recordBytes(3 * STORAGE_CHUNK_SIZE);
     const upload = await prepareRecordUpload({
       owner: owner.address,
       payer,
@@ -360,16 +361,25 @@ describe("storage on the SPL Record program", () => {
     );
   });
 
-  it("refunds the owner when the destination has since become a program", async () => {
+  // Neither can be credited: a close to either would fail and block every
+  // later replacement.
+  for (const [kind, destination] of [
+    ["a program", RECORD_PROGRAM_ADDRESS],
+    ["a sysvar", address("SysvarC1ock11111111111111111111111111111111")],
+  ] as const) {
+    it(`refunds the owner when the destination is ${kind}`, async () => {
+      await refundsOwnerInstead(destination);
+    });
+  }
+
+  async function refundsOwnerInstead(destination: Address): Promise<void> {
     const chain = new Chain();
     const [owner, payer] = await Promise.all([chain.wallet(), chain.wallet()]);
-    // An executable account cannot be credited; here the destination is a
-    // program from the start, as if a program had been deployed there later.
     const first = recordBytes(400, 3);
     const firstUpload = await prepareRecordUpload({
       owner: owner.address,
       payer,
-      refund: RECORD_PROGRAM_ADDRESS,
+      refund: destination,
       bytes: first,
     });
     await chain.upload(payer, firstUpload);
@@ -398,7 +408,7 @@ describe("storage on the SPL Record program", () => {
     assert.equal(chain.exists(firstUpload.address), false);
     // The owner paid the transaction fee and received the predecessor's rent.
     assert.equal(chain.balance(owner.address), ownerBefore + firstRent - 5000n);
-  });
+  }
 
   it("rejects uploads approvers must not sign", async () => {
     const chain = new Chain();
