@@ -33,13 +33,14 @@ import {
   type LocalShieldedKeys,
 } from "@heliuslabs/spr/transaction";
 
-import { RECORD_PROGRAM_ADDRESS } from "../../src/storage.js";
+import { SYSTEM_PROGRAM_ADDRESS } from "../../src/cpi.js";
+import { RECORD_PROGRAM_ADDRESS } from "../../src/record/program.js";
+import { SWIG_PROGRAM_ADDRESS } from "../../src/swig/program.js";
 import {
   SMART_ACCOUNT_PROGRAM_ADDRESS,
-  SYSTEM_PROGRAM_ADDRESS,
   decodeProgramConfig,
   programConfigAddress,
-} from "../../src/squads.js";
+} from "../../src/smart-account/program.js";
 import { GENESIS_HASH, networkConfig } from "./config.js";
 
 export interface Confirmed {
@@ -67,6 +68,7 @@ async function setupNetwork(): Promise<
     USER_REGISTRY_PROGRAM_ID,
     SMART_ACCOUNT_PROGRAM_ADDRESS,
     RECORD_PROGRAM_ADDRESS,
+    SWIG_PROGRAM_ADDRESS,
   ]) {
     const { value } = await client.solanaRpc
       .getAccountInfo(program, { encoding: "base64" })

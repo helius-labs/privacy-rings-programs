@@ -6,118 +6,37 @@
 import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
 
-import {
-  fetchEncodedAccount,
-  type Address,
-  type TransactionSigner,
-} from "@solana/kit";
+import type { TransactionSigner } from "@solana/kit";
 import { SOL_MINT } from "@heliuslabs/spr";
 import type { SprClient } from "@heliuslabs/spr/client";
 import { ShieldedKeypair, initializePoseidon } from "@heliuslabs/spr/keypair";
-import { DepositAsset, depositInstruction } from "@heliuslabs/spr/interface";
-import { getRegisterInstructionAsync } from "@heliuslabs/spr/instructions";
 import { LocalShieldedKeys } from "@heliuslabs/spr/transaction";
 
-import { recoverSharedSecrets, type KeyRecord } from "../../src/keyRecord.js";
-import {
-  fetchVaultRegistry,
-  prepareKeyRecordUpload,
-  type VaultRegistry,
-} from "../../src/registry.js";
-import {
-  decodeRecordAccount,
-  fetchStoragePointer,
-  type RecordUpload,
-} from "../../src/storage.js";
+import { recoverSharedSecrets } from "../../src/keyRecord.js";
+import { prepareKeyRecordUpload } from "../../src/registry.js";
 import {
   checkRegistration,
   checkRotation,
   createSmartAccount,
   fetchSettings,
-  memberFromKeypair,
   recoverVaultKeys,
   registerVaultInstruction,
   rotateSmartAccount,
   spendInstruction,
-  vaultKeys,
-  type Member,
-} from "../../src/smartAccount.js";
+} from "../../src/smart-account/flows.js";
+import { vaultKeys, type Member } from "../../src/vault.js";
 import {
   Permission,
   executeTransactionSyncInstruction,
-} from "../../src/squads.js";
+} from "../../src/smart-account/program.js";
+import {
+  depositToVault,
+  publishedRegistry,
+  registeredMembers,
+  uploadRecord,
+  vaultRegistry,
+} from "./flows.js";
 import { networkSetup, send, syncedSolBalance, transferSol } from "./send.js";
-
-/**
- * Partial uploads never change the published pointer; uploads the payer still
- * controls are cancelled and refunded afterwards.
- */
-async function uploadRecord(
-  client: SprClient,
-  payer: TransactionSigner,
-  owner: Address,
-  upload: RecordUpload,
-  t: TestContext,
-): Promise<void> {
-  t.after(async () => {
-    const account = await fetchEncodedAccount(
-      client.solanaRpc,
-      upload.address,
-      { commitment: "confirmed" },
-    );
-    if (
-      account.exists &&
-      decodeRecordAccount(account.data).authority === payer.address
-    ) {
-      await send(client, payer, [upload.closeInstruction]);
-    }
-  });
-  const previous = await fetchStoragePointer(client.solanaRpc, owner);
-  for (const instructions of upload.transactions) {
-    await send(client, payer, instructions);
-    assert.deepEqual(
-      await fetchStoragePointer(client.solanaRpc, owner),
-      previous,
-      "upload leaves the published pointer unchanged",
-    );
-  }
-}
-
-/**
- * Registers `count` fresh members. Each registers its own keys, because rotate
- * reads kept signers' viewing keys from the registry.
- */
-async function registeredMembers(
-  client: SprClient,
-  payer: TransactionSigner,
-  count: number,
-  t: TestContext,
-): Promise<Member[]> {
-  const members = Array.from({ length: count }, () =>
-    memberFromKeypair(ShieldedKeypair.generate()),
-  );
-  t.after(async () => {
-    for (const member of members) {
-      const balance = await client.getBalance(member.signer.address);
-      if (balance > 0n) {
-        await send(client, payer, [
-          transferSol(member.signer, payer.address, balance),
-        ]);
-      }
-    }
-  });
-  for (const member of members) {
-    await send(client, payer, [
-      await getRegisterInstructionAsync({
-        owner: member.signer,
-        payer,
-        nullifierPublicKey: member.keypair.nullifierPublicKey(),
-        viewingPublicKey: member.keypair.viewingPublicKey().toBytes(),
-      }),
-    ]);
-  }
-  return members;
-}
 
 /** Alice creates a 2-of-2 account for Alice and Bob and funds its vault. */
 async function createTwoOfTwo(
@@ -165,46 +84,6 @@ async function createTwoOfTwo(
     transferSol(payer, created.vault, 20_000_000n),
   ]);
   return created;
-}
-
-/** The registered viewing key and the current key record of `vault`. */
-async function vaultRegistry(client: SprClient, vault: Address) {
-  const registry = await fetchVaultRegistry(client, vault);
-  assert(registry !== undefined, "the vault is registered");
-  return registry;
-}
-
-/** The registry state after `upload` of `record` became the vault's current record. */
-function publishedRegistry(
-  record: KeyRecord,
-  upload: RecordUpload,
-): VaultRegistry {
-  return {
-    viewingPublicKey: record.sharedViewingPublicKey,
-    current: { address: upload.address, record },
-  };
-}
-
-async function depositToVault(
-  client: SprClient,
-  depositor: TransactionSigner,
-  vaultAddress: ReturnType<typeof vaultKeys>["address"],
-  amount: bigint,
-): Promise<void> {
-  await send(client, depositor, [
-    await depositInstruction({
-      tree: client.tree,
-      depositor,
-      deposits: [
-        {
-          asset: DepositAsset.sol(),
-          viewTag: vaultAddress.confidentialViewTag(),
-          recipientOwnerHash: vaultAddress.ownerHash(),
-          amount,
-        },
-      ],
-    }),
-  ]);
 }
 
 test(

@@ -15,7 +15,7 @@ import {
   decodeSettings,
   rotationActions,
   type Settings,
-} from "../src/squads.js";
+} from "../../src/smart-account/program.js";
 
 async function keys(count: number): Promise<Address[]> {
   return Promise.all(

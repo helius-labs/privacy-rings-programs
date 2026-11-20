@@ -3,12 +3,12 @@ import { getAddressEncoder, type Address } from "@solana/kit";
 import type { SprClient } from "@heliuslabs/spr/client";
 import { ByteWriter } from "../src/bytes.js";
 import {
-  RECORD_PROGRAM_ADDRESS,
   encodeStoragePointer,
   storageDataHash,
   storagePointerAddress,
   type StorageRpc,
-} from "../src/storage.js";
+} from "../src/record/storage.js";
+import { RECORD_PROGRAM_ADDRESS } from "../src/record/program.js";
 
 export type FakeAccounts = Map<
   Address,

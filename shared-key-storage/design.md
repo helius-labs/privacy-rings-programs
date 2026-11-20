@@ -88,6 +88,15 @@ pub struct EncryptedViewingKey {
 
 A key record is `177 + 97 · N + 65 · H` bytes for N signers and H old viewing keys. The client requires H to equal the epoch. Historical key i uses HKDF info `OLD_KEY_INFO || LE32(i)`, distinct from the signer and nullifier domains and from every other old-key index. Decryption checks every secret against its advertised public key. These checks are entirely client-side.
 
+## Swig
+
+A Swig wallet can hold the vault instead of a Squads smart account. Its wallet address is the vault, and the key record is bound to the Swig account. Swig has no threshold: each role acts alone. So the roles split the work by permission, and Swig enforces the split on chain:
+
+- **View key authority**: the root role. Only it can register the vault, publish key records and add or remove members. It always has an entry in the key record, because a rotation must decrypt the current record.
+- **Members**: every other role. Each can spend through the shielded pool on its own, but cannot write key records, the user registry or membership.
+
+The flows are the same, with the view key authority in place of a threshold of signers: it creates the Swig and record 0, registers, and rotates by publishing the new record and changing the member roles in one transaction. A spend needs one member's signature.
+
 ## Limitations
 
 1. Nothing checks the ciphertexts. Each approver checks only its own entry, so a bad record can lock other signers out.
@@ -97,3 +106,4 @@ A key record is `177 + 97 · N + 65 · H` bytes for N signers and H old viewing 
 5. Membership is public: the signers are listed in the Squads settings.
 6. A signer's new registry viewing key takes effect only at the next rotation.
 7. A replaced record's rent goes to the vault, not back to whoever paid for the upload.
+8. With Swig, any one member can spend and the view key authority alone controls keys and membership. Losing its key freezes both, since the root role cannot be removed.

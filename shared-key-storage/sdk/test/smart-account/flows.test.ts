@@ -20,39 +20,41 @@ import {
   initializePoseidon,
 } from "@heliuslabs/spr/keypair";
 
-import { ByteWriter } from "../src/bytes.js";
+import { ByteWriter } from "../../src/bytes.js";
 import {
   buildKeyRecord,
   encodeKeyRecord,
   generateNullifierKey,
   type KeyRecord,
-} from "../src/keyRecord.js";
-import { updateKeysInstruction } from "../src/registry.js";
+} from "../../src/keyRecord.js";
+import { updateKeysInstruction } from "../../src/registry.js";
 import {
-  checkInstructionsMatch,
   checkRegistration,
   checkRotation,
-  memberFromKeypair,
   registerVaultInstruction,
   rotateSmartAccountInstructions,
+} from "../../src/smart-account/flows.js";
+import {
+  checkInstructionsMatch,
+  memberFromKeypair,
   type Member,
-} from "../src/smartAccount.js";
+} from "../../src/vault.js";
 import {
   Permission,
   SMART_ACCOUNT_PROGRAM_ADDRESS,
-  SYSTEM_PROGRAM_ADDRESS,
   decodeSettings,
   executeTransactionSyncInstruction,
   vaultAddress,
   type SmartAccountSigner,
-} from "../src/squads.js";
-import { publishRecordInstructions } from "../src/storage.js";
+} from "../../src/smart-account/program.js";
+import { SYSTEM_PROGRAM_ADDRESS } from "../../src/cpi.js";
+import { publishRecordInstructions } from "../../src/record/storage.js";
 import {
   accountClient,
   publish,
   upload,
   type FakeAccounts,
-} from "./storageAccounts.js";
+} from "../storageAccounts.js";
 
 const addressEncoder = getAddressEncoder();
 

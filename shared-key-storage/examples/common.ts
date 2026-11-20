@@ -4,17 +4,20 @@ import { homedir } from "node:os";
 import { setTimeout as sleep } from "node:timers/promises";
 
 import {
+  AccountRole,
   appendTransactionMessageInstructions,
   assertIsTransactionWithBlockhashLifetime,
   createKeyPairSignerFromBytes,
   createSolanaRpc,
   createTransactionMessage,
+  fetchEncodedAccount,
   getSignatureFromTransaction,
   pipe,
   sendTransactionWithoutConfirmingFactory,
   setTransactionMessageFeePayerSigner,
   setTransactionMessageLifetimeUsingBlockhash,
   signTransactionMessageWithSigners,
+  type AccountSignerMeta,
   type Address,
   type Instruction,
   type KeyPairSigner,
@@ -22,8 +25,9 @@ import {
   type Signature,
   type SolanaRpcApi,
 } from "@solana/kit";
+import { SYSTEM_PROGRAM_ADDRESS } from "@heliuslabs/shared-key-storage";
 
-type SolanaRpc = Rpc<SolanaRpcApi>;
+export type SolanaRpc = Rpc<SolanaRpcApi>;
 
 /**
  * Connects to `SOLANA_RPC_URL` and loads the wallet at `PAYER_KEYPAIR`
@@ -63,9 +67,11 @@ async function loadKeypair(path: string): Promise<KeyPairSigner> {
   }
 }
 
-/** The record to publish: the file named on the command line, or a sample. */
-export async function recordBytes(sample: string): Promise<Uint8Array> {
-  const path = process.argv[2];
+/** The record to publish: the file at `path`, or `sample` without one. */
+export async function recordBytes(
+  sample: string,
+  path: string | undefined,
+): Promise<Uint8Array> {
   if (path !== undefined) return new Uint8Array(await readFile(path));
   return new TextEncoder().encode(sample);
 }
@@ -135,6 +141,46 @@ export async function upload(
     const signature = await send(rpc, wallet, instructions);
     console.log(`  step ${index + 1}/${transactions.length}: ${signature}`);
   }
+}
+
+/**
+ * The Swig roles' recurring SOL budget for rent and fees paid by the Swig's
+ * wallet address: 0.05 SOL per about a day of slots.
+ */
+export const SWIG_BUDGET = { lamports: 50_000_000n, window: 216_000n };
+
+/** A System Program transfer that `from` signs. */
+export function transferSol(
+  from: KeyPairSigner,
+  to: Address,
+  lamports: bigint,
+): Instruction {
+  const data = new Uint8Array(12);
+  const view = new DataView(data.buffer);
+  view.setUint32(0, 2, true);
+  view.setBigUint64(4, lamports, true);
+  const source: AccountSignerMeta = {
+    address: from.address,
+    role: AccountRole.WRITABLE_SIGNER,
+    signer: from,
+  };
+  return {
+    programAddress: SYSTEM_PROGRAM_ADDRESS,
+    accounts: [source, { address: to, role: AccountRole.WRITABLE }],
+    data,
+  };
+}
+
+/** The account's data at `confirmed`; fails if it does not exist. */
+export async function accountData(
+  rpc: SolanaRpc,
+  account: Address,
+): Promise<Uint8Array> {
+  const fetched = await fetchEncodedAccount(rpc, account, {
+    commitment: "confirmed",
+  });
+  if (!fetched.exists) throw new Error(`${account} does not exist`);
+  return fetched.data;
 }
 
 /** The account's lamports at `confirmed`. */

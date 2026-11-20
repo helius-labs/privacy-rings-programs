@@ -12,52 +12,30 @@ import {
   type Instruction,
   type TransactionSigner,
 } from "@solana/kit";
-import {
-  ShieldedAddress,
-  ViewingKey,
-  X25519PublicKey,
-  type ShieldedKeypair,
-} from "@heliuslabs/spr/keypair";
-import { LocalKeys, type SprClient } from "@heliuslabs/spr/client";
-import { transactInstruction } from "@heliuslabs/spr/interface";
-import {
-  AssetRegistry,
-  ConfidentialTransfer,
-  LocalShieldedKeys,
-  ProofInputUtxo,
-  encryptConfidentialTransfer,
-  type Utxo,
-} from "@heliuslabs/spr/transaction";
-import { fetchUserRecord } from "@heliuslabs/spr/wallet";
+import { ViewingKey } from "@heliuslabs/spr/keypair";
+import type { SprClient } from "@heliuslabs/spr/client";
+import type { Utxo } from "@heliuslabs/spr/transaction";
 
-import { bytesEqual } from "./bytes.js";
 import {
   buildKeyRecord,
-  checkKeyHistory,
   compareAddresses,
   encodeKeyRecord,
   generateNullifierKey,
   isCurrentKeyRecord,
-  recoverSharedSecrets,
-  recoverOldViewingKeys,
   type KeyRecipient,
   type KeyRecord,
   type SharedSecrets,
-} from "./keyRecord.js";
+} from "../keyRecord.js";
 import {
-  currentKeyRecord,
-  fetchPublishedKeyRecord,
-  fetchVaultRegistry,
   registerVaultKeysInstruction,
   prepareKeyRecordUpload,
   updateKeysInstruction,
   type KeyRecordPublication,
-} from "./registry.js";
+} from "../registry.js";
 import {
-  checkUploadedRecord,
   publishRecordInstructions,
   type RecordUpload,
-} from "./storage.js";
+} from "../record/storage.js";
 import {
   checkSyncConsensus,
   createSmartAccountInstruction,
@@ -71,31 +49,25 @@ import {
   vaultAddress,
   type Settings,
   type SmartAccountSigner,
-} from "./squads.js";
+} from "./program.js";
+import {
+  accountData,
+  checkEntryOpens,
+  checkInstructionsMatch,
+  checkProposedKeyRecord as checkProposedVaultRecord,
+  destroySecrets,
+  fetchCurrentKeyRecord as fetchCurrentVaultRecord,
+  recoverRecordKeys,
+  registeredViewingKey,
+  rotatedKeyRecord,
+  vaultTransactInstruction,
+  type Member,
+  type Payment,
+  type VaultSecrets,
+} from "../vault.js";
 
 /** A signer to add: its Squads permissions and its viewing public key. */
 export interface NewSigner extends SmartAccountSigner, KeyRecipient {}
-
-/** A smart account member: its Solana signer and its shielded keypair. */
-export interface Member {
-  readonly signer: TransactionSigner;
-  readonly keypair: ShieldedKeypair;
-}
-
-export function memberFromKeypair(keypair: ShieldedKeypair): Member {
-  return { signer: keypair.toSolanaSigner(), keypair };
-}
-
-async function accountData(
-  client: SprClient,
-  account: Address,
-): Promise<Uint8Array | undefined> {
-  const { value } = await client.solanaRpc
-    .getAccountInfo(account, { encoding: "base64", commitment: "confirmed" })
-    .send();
-  if (value === null) return undefined;
-  return new Uint8Array(Buffer.from(value.data[0], "base64"));
-}
 
 export async function fetchSettings(
   client: SprClient,
@@ -107,18 +79,6 @@ export async function fetchSettings(
   return decodeSettings(data);
 }
 
-/** The vault's shielded identity under the shared keys. */
-function vaultShieldedAddress(
-  vault: Address,
-  secrets: SharedSecrets,
-): ShieldedAddress {
-  return ShieldedAddress.forPda({
-    pda: vault,
-    nullifierPublicKey: secrets.nullifierKey.publicKey(),
-    viewingPublicKey: secrets.viewingKey.publicKey(),
-  });
-}
-
 /**
  * The current key record of a registered vault, read with the Squads
  * signers in one place so both come from the same reads.
@@ -128,26 +88,17 @@ async function fetchCurrentKeyRecord(
   settings: Address,
   decoded: Settings,
 ): Promise<KeyRecordPublication> {
-  const registry = await fetchVaultRegistry(
+  return fetchCurrentVaultRecord(
     client,
-    await vaultAddress(settings),
-  );
-  if (registry === undefined) {
-    throw new Error(`the vault of ${settings} is not registered`);
-  }
-  return currentKeyRecord(
-    registry,
     settings,
+    await vaultAddress(settings),
     decoded.signers.map((signer) => signer.key),
   );
 }
 
 /**
  * Recovers the shared secrets of the current key record, and the viewing
- * keys of every previous epoch, current first. All of these secrets are
- * encrypted into the latest key record, including for newly added signers.
- * Their keys open UTXOs the vault received before a rotate; the SDK's wallet
- * sync tries every viewing key it holds on each of the vault's outputs.
+ * keys of every previous epoch, current first; see `recoverRecordKeys`.
  */
 export async function recoverVaultKeys(
   input: Readonly<{
@@ -155,48 +106,15 @@ export async function recoverVaultKeys(
     settings: Address;
     member: Member;
   }>,
-): Promise<
-  Readonly<{
-    record: KeyRecord;
-    secrets: SharedSecrets;
-    viewingKeys: ViewingKey[];
-  }>
-> {
+): Promise<VaultSecrets> {
   const { record } = await fetchCurrentKeyRecord(
     input.client,
     input.settings,
     await fetchSettings(input.client, input.settings),
   );
-  const secrets = recoverSharedSecrets(
-    record,
-    input.member.signer.address,
-    input.member.keypair,
-  );
-  const viewingKeys = [secrets.viewingKey.clone()];
-  try {
-    viewingKeys.push(
-      ...recoverOldViewingKeys(record, secrets.viewingKey).reverse(),
-    );
-  } catch (error) {
-    destroySecrets(secrets);
-    viewingKeys.forEach((key) => key.destroy());
-    throw error;
-  }
-  return { record, secrets, viewingKeys };
+  return recoverRecordKeys(record, input.member);
 }
 
-function destroySecrets(secrets: SharedSecrets): void {
-  secrets.viewingKey.destroy();
-  secrets.nullifierKey.destroy();
-}
-
-/**
- * Checks a proposed key record against the vault's accounts: the upload at
- * `upload` is frozen under the vault and holds exactly `record`, and `record`
- * extends the vault's published record, read through the vault's storage
- * pointer. Before Register there is none, so `record` must be epoch 0.
- * Returns the published record.
- */
 async function checkProposedKeyRecord(
   input: Readonly<{
     client: SprClient;
@@ -205,39 +123,11 @@ async function checkProposedKeyRecord(
     upload: Address;
   }>,
 ): Promise<KeyRecordPublication | undefined> {
-  const { record } = input;
-  if (record.settings !== input.settings) {
-    throw new Error(`the key record belongs to ${record.settings}`);
-  }
-  const vault = await vaultAddress(input.settings);
-  await checkUploadedRecord(
-    input.client.solanaRpc,
-    vault,
-    input.upload,
-    encodeKeyRecord(record),
-  );
-  const published = await fetchPublishedKeyRecord(input.client, vault);
-  checkKeyHistory(record, published?.record);
-  return published;
-}
-
-/**
- * Checks that `member`'s entry in `record` opens to keys matching the record,
- * including every old viewing key.
- */
-function checkEntryOpens(record: KeyRecord, member: Member): void {
-  const secrets = recoverSharedSecrets(
-    record,
-    member.signer.address,
-    member.keypair,
-  );
-  try {
-    recoverOldViewingKeys(record, secrets.viewingKey).forEach((key) =>
-      key.destroy(),
-    );
-  } finally {
-    destroySecrets(secrets);
-  }
+  return checkProposedVaultRecord({
+    ...input,
+    accountId: input.settings,
+    vault: await vaultAddress(input.settings),
+  });
 }
 
 /**
@@ -264,44 +154,6 @@ export async function checkOwnEntry(
 ): Promise<void> {
   await checkProposedKeyRecord(input);
   checkEntryOpens(input.record, input.member);
-}
-
-/**
- * Throws unless `proposed` holds exactly the `expected` instructions, in
- * order: the same programs, accounts, account roles and data. Both lists are
- * instructions as built. Instructions decompiled from a transaction message
- * have their account roles merged across the transaction and may not match.
- */
-export function checkInstructionsMatch(
-  expected: readonly Instruction[],
-  proposed: readonly Instruction[],
-): void {
-  if (expected.length !== proposed.length) {
-    throw new Error(
-      `expected ${expected.length} instructions, got ${proposed.length}`,
-    );
-  }
-  expected.forEach((instruction, index) => {
-    const proposedInstruction = proposed.at(index);
-    const accounts = instruction.accounts ?? [];
-    const proposedAccounts = proposedInstruction?.accounts ?? [];
-    if (
-      proposedInstruction === undefined ||
-      proposedInstruction.programAddress !== instruction.programAddress ||
-      proposedAccounts.length !== accounts.length ||
-      accounts.some(
-        (account, position) =>
-          account.address !== proposedAccounts.at(position)?.address ||
-          account.role !== proposedAccounts.at(position)?.role,
-      ) ||
-      !bytesEqual(
-        instruction.data ?? new Uint8Array(),
-        proposedInstruction.data ?? new Uint8Array(),
-      )
-    ) {
-      throw new Error(`instruction ${index} is not the expected instruction`);
-    }
-  });
 }
 
 /**
@@ -407,32 +259,6 @@ export async function checkRotation(
     checkEntryOpens(record, member);
   }
   checkInstructionsMatch(expected, input.proposed);
-}
-
-/** The key holders for syncing and proving as the vault. */
-export function vaultKeys(
-  client: SprClient,
-  vault: Address,
-  secrets: SharedSecrets,
-  viewingKeys: readonly ViewingKey[],
-): Readonly<{
-  address: ShieldedAddress;
-  shielded: LocalShieldedKeys;
-  proving: LocalKeys;
-}> {
-  const address = vaultShieldedAddress(vault, secrets);
-  const keys = { address, viewingKeys, nullifierKey: secrets.nullifierKey };
-  const shielded = LocalShieldedKeys.fromKeys(keys);
-  try {
-    return {
-      address,
-      shielded,
-      proving: LocalKeys.fromKeys(keys, client.proofService),
-    };
-  } catch (error) {
-    shielded.destroy();
-    throw error;
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -593,22 +419,6 @@ export interface Rotation {
 }
 
 /**
- * A kept signer's viewing public key, read from its user registry record.
- * Taking it from anywhere the rotator controls would let the rotator choose
- * whom the new shared viewing key is encrypted to.
- */
-async function registeredViewingKey(
-  client: SprClient,
-  signer: Address,
-): Promise<X25519PublicKey> {
-  const record = await fetchUserRecord({ rpc: client, owner: signer });
-  if (record === undefined) {
-    throw new Error(`kept signer ${signer} is not in the user registry`);
-  }
-  return X25519PublicKey.fromBytes(record.viewingPublicKey);
-}
-
-/**
  * The Rotate instructions of step 5, in order: Squads
  * `executeTransactionSyncV2` with the user registry `update_keys` and the
  * publication of the record at `upload`, which closes `predecessor`, then
@@ -715,7 +525,6 @@ export async function rotateSmartAccount(
     input.settings,
     current,
   );
-  const { record } = published;
   const kept = await Promise.all(
     input.keep.map(async (key): Promise<NewSigner> => {
       const signer = current.signers.find((entry) => entry.key === key);
@@ -730,67 +539,40 @@ export async function rotateSmartAccount(
     }),
   );
   const next = [...kept, ...input.add];
-
-  const secrets = recoverSharedSecrets(
+  const record = rotatedKeyRecord({
+    accountId: input.settings,
+    record: published.record,
+    rotator: input.rotator,
+    recipients: next,
+  });
+  const vault = await vaultAddress(input.settings);
+  const upload = await prepareKeyRecordUpload({
+    owner: vault,
+    payer: input.payer,
     record,
-    input.rotator.signer.address,
-    input.rotator.keypair,
-  );
-  const newSecrets: SharedSecrets = {
-    viewingKey: ViewingKey.generate(),
-    nullifierKey: secrets.nullifierKey,
-  };
-  let previousViewingKeys: ViewingKey[] = [];
-  try {
-    previousViewingKeys = recoverOldViewingKeys(record, secrets.viewingKey);
-    const newRecord = buildKeyRecord({
-      settings: input.settings,
-      epoch: record.epoch + 1n,
-      secrets: newSecrets,
-      previousViewingKeys: [...previousViewingKeys, secrets.viewingKey],
-      recipients: next,
-    });
-    checkKeyHistory(newRecord, record);
-    const vault = await vaultAddress(input.settings);
-    const upload = await prepareKeyRecordUpload({
-      owner: vault,
-      payer: input.payer,
-      record: newRecord,
-    });
-    const instructions = await rotateSmartAccountInstructions({
-      settings: input.settings,
-      current,
-      approvers: input.approvers,
-      rentPayer: input.rotator.signer,
-      record: newRecord,
-      upload: upload.address,
-      predecessor: published.address,
-      next,
-      threshold: input.threshold,
-    });
-    return { record: newRecord, upload, instructions };
-  } finally {
-    previousViewingKeys.forEach((key) => key.destroy());
-    newSecrets.viewingKey.destroy();
-    destroySecrets(secrets);
-  }
+  });
+  const instructions = await rotateSmartAccountInstructions({
+    settings: input.settings,
+    current,
+    approvers: input.approvers,
+    rentPayer: input.rotator.signer,
+    record,
+    upload: upload.address,
+    predecessor: published.address,
+    next,
+    threshold: input.threshold,
+  });
+  return { record, upload, instructions };
 }
 
 // ---------------------------------------------------------------------------
 // 3. Spend
 // ---------------------------------------------------------------------------
 
-export interface Payment {
-  readonly recipient: ShieldedAddress;
-  readonly asset: Address;
-  readonly amount: bigint;
-}
-
 /**
- * Spend steps 3 to 6: builds a confidential transfer from the vault's UTXOs,
- * proves it with the shared nullifier secret, and wraps the SPP `transact`
- * in Squads `executeTransactionSyncV2`. The vault is the owner signer and
- * the SPP payer, so the vault needs SOL for the fees.
+ * Spend steps 3 to 6: builds and proves the vault's SPP `transact` (see
+ * `vaultTransactInstruction`) and wraps it in Squads
+ * `executeTransactionSyncV2`. The vault needs SOL for the fees.
  */
 export async function spendInstruction(
   input: Readonly<{
@@ -804,55 +586,13 @@ export async function spendInstruction(
   }>,
 ): Promise<Instruction> {
   await checkApprovers(input.client, input.settings, input.approvers);
-  const vault = await vaultAddress(input.settings);
-  const assets = new AssetRegistry();
-  const keys = vaultKeys(input.client, vault, input.secrets, input.viewingKeys);
-  try {
-    const proofInputs = input.inputs.map((utxo) =>
-      ProofInputUtxo.fromNullifierKey(utxo, input.secrets.nullifierKey),
-    );
-    const transfer = new ConfidentialTransfer(keys.address, proofInputs, vault);
-    for (const payment of input.payments) {
-      transfer.send(payment.recipient, payment.asset, payment.amount);
-    }
-    const prepared = transfer.prepare();
-    const [txKey] = await keys.shielded.transactionKeys([
-      {
-        viewingPublicKey: keys.address.viewingPublicKey,
-        firstNullifier: prepared.firstNullifier,
-      },
-    ]);
-    if (txKey === undefined)
-      throw new Error("no transaction key for the transfer");
-    let encrypted: ReturnType<typeof encryptConfidentialTransfer>;
-    try {
-      encrypted = encryptConfidentialTransfer(txKey, {
-        outputs: prepared.outputs,
-        assets,
-      });
-    } finally {
-      txKey.destroy();
-    }
-    const sppProofInputs = prepared.finalize({
-      txViewingPublicKey: encrypted.txViewingPublicKey,
-      salt: encrypted.salt,
-      payload: encrypted.payload,
-    });
-    const data = await input.client.proveTransact(sppProofInputs, keys.proving);
-    const transact = await transactInstruction({
-      payer: vault,
-      ownerSigners: [vault],
-      inputTree: input.client.tree,
-      outputTree: input.client.tree,
-      data,
-    });
-    return executeTransactionSyncInstruction({
-      settings: input.settings,
-      approvers: input.approvers,
-      inner: [transact],
-    });
-  } finally {
-    keys.shielded.destroy();
-    keys.proving.destroy();
-  }
+  const transact = await vaultTransactInstruction({
+    ...input,
+    vault: await vaultAddress(input.settings),
+  });
+  return executeTransactionSyncInstruction({
+    settings: input.settings,
+    approvers: input.approvers,
+    inner: [transact],
+  });
 }

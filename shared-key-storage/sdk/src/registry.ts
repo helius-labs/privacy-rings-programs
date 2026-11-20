@@ -1,6 +1,6 @@
 /**
  * Key records uploaded in chunks and published by the vault.
- * Publication and user-registry changes run in the same Squads transaction.
+ * Publication and user-registry changes run in the same wallet transaction.
  * Replaced records are closed and their rent goes to the vault; the latest
  * record contains all old viewing keys.
  */
@@ -27,7 +27,7 @@ import {
   fetchPublishedRecord,
   prepareRecordUpload,
   type RecordUpload,
-} from "./storage.js";
+} from "./record/storage.js";
 
 const UPDATE_KEYS = 2;
 
@@ -74,8 +74,8 @@ export async function fetchVaultRegistry(
 
 /**
  * The current key record: the one the vault's storage pointer names. It
- * must belong to `settings`, name exactly the Squads signers, and hold the
- * registered viewing key; a Squads transaction that changed the signers
+ * must belong to `settings`, name exactly the wallet's signers, and hold the
+ * registered viewing key; a wallet transaction that changed the signers
  * outside the rotate flow breaks the last two.
  */
 export function currentKeyRecord(

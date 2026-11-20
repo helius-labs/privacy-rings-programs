@@ -2,12 +2,14 @@
   "name": "@heliuslabs/shared-key-storage-examples",
   "version": "0.1.0",
   "private": true,
-  "description": "Create and update a record with the Shared Key Storage SDK",
+  "description": "Create and rotate a record owned by a Squads smart account or a Swig wallet",
   "type": "module",
   "scripts": {
     "check": "oxfmt --check . && tsc --noEmit",
-    "create-record": "node --import tsx create.ts",
-    "update-record": "node --import tsx update.ts"
+    "smart-account-create": "node --import tsx smart-account/create.ts",
+    "smart-account-rotate": "node --import tsx smart-account/rotate.ts",
+    "swig-create": "node --import tsx swig/create.ts",
+    "swig-rotate": "node --import tsx swig/rotate.ts"
   },
   "dependencies": {
     "@heliuslabs/shared-key-storage": "link:../sdk",

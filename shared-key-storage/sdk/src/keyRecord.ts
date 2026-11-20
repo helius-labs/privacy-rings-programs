@@ -1,20 +1,11 @@
 /**
  * The key record (design.md, "Key Record"): the shared viewing secret
  * encrypted to every signer, with the nullifier secret and all earlier viewing
- * secrets encrypted to the current shared viewing key.
- *
- * Encryption of `plaintext` to recipient public key `R` under ephemeral
- * secret `e` (public key `E`):
- *
- *   dh  = X25519(e, R)
- *   key = HKDF-SHA256(ikm = dh, salt = E || R, info) -> 32 bytes
- *   ct  = AES-256-CTR(key, iv = 0^16, plaintext)
- *
- * HKDF info separates signer, nullifier and indexed historical-key encryption,
- * so the zero IV never repeats under a derived key.
- * Nothing on chain checks a ciphertext; each signer checks its own entry.
+ * secrets encrypted to the current shared viewing key, all under one ephemeral
+ * key (see `encryption.ts`). Nothing on chain checks a ciphertext; each signer
+ * checks its own entry.
  */
-import { createCipheriv, hkdfSync, randomFillSync } from "node:crypto";
+import { randomFillSync } from "node:crypto";
 
 import {
   getAddressDecoder,
@@ -32,22 +23,20 @@ import {
 } from "@heliuslabs/spr/keypair";
 
 import { ByteReader, ByteWriter, bytesEqual } from "./bytes.js";
-
-const KEY_INFO = new TextEncoder().encode(
-  "zolana-examples/smart-account-client/key",
-);
-const NULLIFIER_INFO = new TextEncoder().encode(
-  "zolana-examples/smart-account-client/nullifier",
-);
-const OLD_KEY_INFO = new TextEncoder().encode(
-  "zolana-examples/smart-account-client/old-key",
-);
+import {
+  KEY_INFO,
+  NULLIFIER_INFO,
+  decryptWith,
+  encryptTo,
+  oldKeyInfo,
+  type SignerViewingKey,
+} from "./encryption.js";
 
 const addressEncoder = getAddressEncoder();
 const addressDecoder = getAddressDecoder();
 
 export interface KeyEntry {
-  /** The signer's Solana public key, as in Squads `Settings.signers`. */
+  /** The signer's Solana public key: a Squads signer or Swig authority. */
   readonly signer: Address;
   /** The signer's tagged X25519 viewing public key. */
   readonly viewingPublicKey: Bytes33;
@@ -63,7 +52,7 @@ export interface EncryptedViewingKey {
 }
 
 export interface KeyRecord {
-  /** The Squads Settings account this record belongs to. */
+  /** The wallet account this record belongs to: Squads Settings or the Swig. */
   readonly settings: Address;
   /** 0 at create, incremented by every rotate. */
   readonly epoch: bigint;
@@ -73,7 +62,7 @@ export interface KeyRecord {
   readonly nullifierPublicKey: Bytes32;
   /** The 31-byte nullifier secret encrypted to `sharedViewingPublicKey`. */
   readonly nullifierCiphertext: Bytes31;
-  /** One entry per Squads signer, sorted by signer. */
+  /** One entry per wallet signer, sorted by signer. */
   readonly entries: readonly KeyEntry[];
   /** Every previous epoch's viewing key, encrypted, oldest first. */
   readonly oldViewingKeys: readonly EncryptedViewingKey[];
@@ -83,12 +72,6 @@ export interface KeyRecord {
 export interface KeyRecipient {
   readonly key: Address;
   readonly viewingPublicKey: X25519PublicKey;
-}
-
-/** The signer's view of its own viewing key: an ECDH and its public key. */
-export interface SignerViewingKey {
-  publicKey(): X25519PublicKey;
-  ecdh(counterparty: X25519PublicKey): Uint8Array;
 }
 
 /** The vault's two shared secrets, recovered from or written to a record. */
@@ -207,107 +190,28 @@ export function checkKeyHistory(record: KeyRecord, previous?: KeyRecord): void {
   }
 }
 
-function oldKeyInfo(index: number): Uint8Array {
-  return new ByteWriter().bytes(OLD_KEY_INFO).u32(index).finish();
-}
-
+/** Each previous viewing secret encrypted to `current` in its own domain. */
 function encryptOldViewingKeys(
   ephemeral: X25519Keypair,
   current: X25519PublicKey,
   previous: readonly ViewingKey[],
 ): EncryptedViewingKey[] {
-  if (previous.length === 0) return [];
-  const dh = ephemeral.ecdh(current);
-  const ephemeralPublicKey = ephemeral.publicKey().toBytes();
-  const currentPublicKey = current.toBytes();
-  try {
-    return previous.map((key, index) => {
-      const secret = key.secretBytes();
-      try {
-        return {
-          viewingPublicKey: key.publicKey().toBytes(),
-          ciphertext: ctrApply(
-            streamKey(
-              dh,
-              ephemeralPublicKey,
-              currentPublicKey,
-              oldKeyInfo(index),
-            ),
-            secret,
-          ) as Bytes32,
-        };
-      } finally {
-        secret.fill(0);
-      }
-    });
-  } finally {
-    dh.fill(0);
-  }
-}
-
-function streamKey(
-  dh: Uint8Array,
-  ephemeralPublicKey: Uint8Array,
-  recipientPublicKey: Uint8Array,
-  info: Uint8Array,
-): Buffer {
-  const salt = new Uint8Array(
-    ephemeralPublicKey.length + recipientPublicKey.length,
-  );
-  salt.set(ephemeralPublicKey, 0);
-  salt.set(recipientPublicKey, ephemeralPublicKey.length);
-  return Buffer.from(hkdfSync("sha256", dh, salt, info, 32));
-}
-
-/**
- * AES-256-CTR with a zero IV; encryption and decryption are the same. Zeroes
- * the key and the intermediate buffers; the caller owns the returned copy.
- */
-function ctrApply(key: Buffer, data: Uint8Array): Uint8Array {
-  const cipher = createCipheriv("aes-256-ctr", key, Buffer.alloc(16));
-  const parts = [cipher.update(data), cipher.final()];
-  const joined = Buffer.concat(parts);
-  try {
-    return new Uint8Array(joined);
-  } finally {
-    key.fill(0);
-    joined.fill(0);
-    parts.forEach((part) => part.fill(0));
-  }
-}
-
-function encryptTo(
-  ephemeral: X25519Keypair,
-  recipient: X25519PublicKey,
-  plaintext: Uint8Array,
-  info: Uint8Array,
-): Uint8Array {
-  const dh = ephemeral.ecdh(recipient);
-  try {
-    return ctrApply(
-      streamKey(dh, ephemeral.publicKey().toBytes(), recipient.toBytes(), info),
-      plaintext,
-    );
-  } finally {
-    dh.fill(0);
-  }
-}
-
-function decryptWith(
-  key: SignerViewingKey,
-  ephemeralPublicKey: Bytes33,
-  ciphertext: Uint8Array,
-  info: Uint8Array,
-): Uint8Array {
-  const dh = key.ecdh(X25519PublicKey.fromBytes(ephemeralPublicKey));
-  try {
-    return ctrApply(
-      streamKey(dh, ephemeralPublicKey, key.publicKey().toBytes(), info),
-      ciphertext,
-    );
-  } finally {
-    dh.fill(0);
-  }
+  return previous.map((key, index) => {
+    const secret = key.secretBytes();
+    try {
+      return {
+        viewingPublicKey: key.publicKey().toBytes(),
+        ciphertext: encryptTo(
+          ephemeral,
+          current,
+          secret,
+          oldKeyInfo(index),
+        ) as Bytes32,
+      };
+    } finally {
+      secret.fill(0);
+    }
+  });
 }
 
 /** A fresh random nullifier secret; 31 bytes always fit the BN254 field. */
@@ -414,8 +318,6 @@ export function recoverOldViewingKeys(
     throw new Error("historical keys require the current shared viewing key");
   }
   const recovered: ViewingKey[] = [];
-  if (record.oldViewingKeys.length === 0) return recovered;
-  const dh = current.ecdh(X25519PublicKey.fromBytes(record.ephemeralPublicKey));
   const seen = new Set<string>([
     Buffer.from(record.sharedViewingPublicKey).toString("hex"),
   ]);
@@ -425,14 +327,11 @@ export function recoverOldViewingKeys(
       if (seen.has(publicKey))
         throw new Error("viewing key history contains a duplicate key");
       seen.add(publicKey);
-      const secret = ctrApply(
-        streamKey(
-          dh,
-          record.ephemeralPublicKey,
-          record.sharedViewingPublicKey,
-          oldKeyInfo(index),
-        ),
+      const secret = decryptWith(
+        current,
+        record.ephemeralPublicKey,
         entry.ciphertext,
+        oldKeyInfo(index),
       );
       let key;
       try {
@@ -452,8 +351,6 @@ export function recoverOldViewingKeys(
   } catch (error) {
     recovered.forEach((key) => key.destroy());
     throw error;
-  } finally {
-    dh.fill(0);
   }
 }
 
@@ -513,7 +410,7 @@ export function recoverSharedSecrets(
 }
 
 /**
- * The on-chain state a key record must match to be current: the Squads
+ * The on-chain state a key record must match to be current: the wallet's
  * signer set and the vault's registered viewing key.
  */
 export interface OnChainKeyState {
@@ -538,7 +435,7 @@ export function isCurrentKeyRecord(
   );
 }
 
-/** Byte order of the 32-byte keys, which is the order Squads sorts signers in. */
+/** Byte order of the 32-byte keys, the order Squads sorts signers in. */
 export function compareAddresses(a: Address, b: Address): number {
   const left = addressEncoder.encode(a);
   const right = addressEncoder.encode(b);

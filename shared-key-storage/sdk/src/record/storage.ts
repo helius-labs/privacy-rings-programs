@@ -18,7 +18,6 @@
 import { createHash } from "node:crypto";
 import {
   AccountRole,
-  address,
   createAddressWithSeed,
   fetchEncodedAccount,
   generateKeyPairSigner,
@@ -33,31 +32,29 @@ import {
   type Rpc,
   type TransactionSigner,
 } from "@solana/kit";
-import { ByteReader, ByteWriter, bytesEqual } from "./bytes.js";
-import { SYSTEM_PROGRAM_ADDRESS } from "./squads.js";
+import { ByteReader, ByteWriter, bytesEqual } from "../bytes.js";
+import { SYSTEM_PROGRAM_ADDRESS } from "../cpi.js";
+import {
+  MAX_RECORD_SIZE,
+  RECORD_HEADER_SIZE,
+  RECORD_PROGRAM_ADDRESS,
+  decodeRecordAccount,
+  recordCloseInstruction,
+  recordInitializeInstruction,
+  recordSetAuthorityInstruction,
+  recordWriteInstruction,
+} from "./program.js";
 
-/** The SPL Record program (mainnet and devnet). */
-export const RECORD_PROGRAM_ADDRESS = address(
-  "recr1L3PCGKLbckBqMNcJhuuyU1zgo8nBhfLVsJNwr5",
-);
-/** Record account header: version (1) and authority. */
-export const RECORD_HEADER_SIZE = 1 + 32;
 /**
  * Bytes per `Write`, so each upload transaction stays under 1,232 bytes with
  * compute budget instructions and a separate fee payer.
  */
 export const STORAGE_CHUNK_SIZE = 768;
-export const MAX_RECORD_SIZE = 10 * 1024 * 1024 - RECORD_HEADER_SIZE;
 /** Seed of the owner's pointer, `createWithSeed(owner, POINTER_SEED, Record)`. */
 export const POINTER_SEED = "key-record-pointer";
 /** `SKRPTR02`, current record, data hash. */
 export const POINTER_DATA_SIZE = 8 + 32 + 32;
 
-const RECORD_VERSION = 1;
-const RECORD_INITIALIZE = 0;
-const RECORD_WRITE = 1;
-const RECORD_SET_AUTHORITY = 2;
-const RECORD_CLOSE = 3;
 const SYSTEM_CREATE_ACCOUNT = 0;
 const SYSTEM_TRANSFER = 2;
 const SYSTEM_ALLOCATE_WITH_SEED = 9;
@@ -114,21 +111,6 @@ export function storagePointerAddress(owner: Address): Promise<Address> {
 /** SHA-256 of the record bytes; the pointer stores it. */
 export function storageDataHash(bytes: Uint8Array): Uint8Array {
   return Uint8Array.from(createHash("sha256").update(bytes).digest());
-}
-
-/** Splits a Record account into its authority and data, checking the version. */
-export function decodeRecordAccount(bytes: Uint8Array): {
-  readonly authority: Address;
-  readonly data: Uint8Array;
-} {
-  const reader = new ByteReader(bytes, "record account");
-  if (reader.u8("version") !== RECORD_VERSION) {
-    throw new Error("not an initialized record account");
-  }
-  const authority = addressDecoder.decode(reader.bytes(32, "authority"));
-  const data = reader.bytes(bytes.length - RECORD_HEADER_SIZE, "data");
-  reader.end();
-  return { authority, data };
 }
 
 export function encodeStoragePointer(pointer: StoragePointer): Uint8Array {
@@ -214,70 +196,6 @@ export async function fetchPublishedRecord(
   return { address: pointer.current, bytes };
 }
 
-function recordInstruction(
-  accounts: readonly AccountMeta[],
-  data: Uint8Array,
-): Instruction {
-  return { programAddress: RECORD_PROGRAM_ADDRESS, accounts, data };
-}
-
-function recordInitialize(record: Address, authority: Address): Instruction {
-  return recordInstruction(
-    [
-      { address: record, role: AccountRole.WRITABLE },
-      { address: authority, role: AccountRole.READONLY },
-    ],
-    Uint8Array.of(RECORD_INITIALIZE),
-  );
-}
-
-function recordWrite(
-  record: Address,
-  authority: AccountMeta,
-  offset: number,
-  bytes: Uint8Array,
-): Instruction {
-  return recordInstruction(
-    [{ address: record, role: AccountRole.WRITABLE }, authority],
-    new ByteWriter()
-      .u8(RECORD_WRITE)
-      .u64(BigInt(offset))
-      .u32(bytes.length)
-      .bytes(bytes)
-      .finish(),
-  );
-}
-
-function recordSetAuthority(
-  record: Address,
-  authority: AccountMeta,
-  newAuthority: Address,
-): Instruction {
-  return recordInstruction(
-    [
-      { address: record, role: AccountRole.WRITABLE },
-      authority,
-      { address: newAuthority, role: AccountRole.READONLY },
-    ],
-    Uint8Array.of(RECORD_SET_AUTHORITY),
-  );
-}
-
-function recordClose(
-  record: Address,
-  authority: AccountMeta,
-  destination: Address,
-): Instruction {
-  return recordInstruction(
-    [
-      { address: record, role: AccountRole.WRITABLE },
-      authority,
-      { address: destination, role: AccountRole.WRITABLE },
-    ],
-    Uint8Array.of(RECORD_CLOSE),
-  );
-}
-
 function systemInstruction(
   accounts: readonly AccountMeta[],
   data: Uint8Array,
@@ -340,7 +258,7 @@ export async function prepareRecordUpload(
           .bytes(addressEncoder.encode(RECORD_PROGRAM_ADDRESS))
           .finish(),
       ),
-      recordInitialize(record.address, input.payer.address),
+      recordInitializeInstruction(record.address, input.payer.address),
     ],
   ];
   for (
@@ -349,16 +267,20 @@ export async function prepareRecordUpload(
     offset += STORAGE_CHUNK_SIZE
   ) {
     const chunk = input.bytes.subarray(offset, offset + STORAGE_CHUNK_SIZE);
-    transactions.push([recordWrite(record.address, authority, offset, chunk)]);
+    transactions.push([
+      recordWriteInstruction(record.address, authority, offset, chunk),
+    ]);
   }
   // Handing the authority to the owner freezes the bytes for approval.
   transactions
     .at(-1)
-    ?.push(recordSetAuthority(record.address, authority, input.owner));
+    ?.push(
+      recordSetAuthorityInstruction(record.address, authority, input.owner),
+    );
   return {
     address: record.address,
     transactions,
-    closeInstruction: recordClose(
+    closeInstruction: recordCloseInstruction(
       record.address,
       authority,
       input.payer.address,
@@ -422,12 +344,12 @@ export async function publishRecordInstructions(
   // nothing, but the Record program rejects it unless the upload exists, is
   // initialized and is controlled by the owner. A publication therefore
   // cannot name a missing record or one its payer can still rewrite or close.
-  const frozenCheck = recordSetAuthority(upload, ownerSigner, owner);
+  const frozenCheck = recordSetAuthorityInstruction(upload, ownerSigner, owner);
   if (predecessor !== undefined) {
     return [
       frozenCheck,
-      recordWrite(pointer, ownerSigner, 0, pointerData),
-      recordClose(predecessor, ownerSigner, owner),
+      recordWriteInstruction(pointer, ownerSigner, 0, pointerData),
+      recordCloseInstruction(predecessor, ownerSigner, owner),
     ];
   }
   // Transfer, allocate and assign instead of create, so lamports someone sent
@@ -470,8 +392,8 @@ export async function publishRecordInstructions(
         .bytes(programBytes)
         .finish(),
     ),
-    recordInitialize(pointer, owner),
+    recordInitializeInstruction(pointer, owner),
     frozenCheck,
-    recordWrite(pointer, ownerSigner, 0, pointerData),
+    recordWriteInstruction(pointer, ownerSigner, 0, pointerData),
   ];
 }

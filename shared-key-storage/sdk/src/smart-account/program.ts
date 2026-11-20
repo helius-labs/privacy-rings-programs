@@ -9,7 +9,6 @@ import {
   getAddressDecoder,
   getAddressEncoder,
   getProgramDerivedAddress,
-  mergeRoles,
   type AccountMeta,
   type AccountSignerMeta,
   type Address,
@@ -17,13 +16,11 @@ import {
   type TransactionSigner,
 } from "@solana/kit";
 
-import { ByteReader, ByteWriter, bytesEqual } from "./bytes.js";
+import { ByteReader, ByteWriter, bytesEqual } from "../bytes.js";
+import { SYSTEM_PROGRAM_ADDRESS, compileInnerInstructions } from "../cpi.js";
 
 export const SMART_ACCOUNT_PROGRAM_ADDRESS = address(
   "SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG",
-);
-export const SYSTEM_PROGRAM_ADDRESS = address(
-  "11111111111111111111111111111111",
 );
 
 // Anchor discriminators: sha256("global:<name>")[0..8] and
@@ -236,51 +233,11 @@ export function compileSyncPayload(
   instructions: readonly Instruction[],
   vault: Address,
 ): Readonly<{ payload: Uint8Array; accounts: AccountMeta[] }> {
-  const accounts: AccountMeta[] = [];
-  const indexOf = (meta: AccountMeta): number => {
-    const found = accounts.findIndex(
-      (existing) => existing.address === meta.address,
-    );
-    // `accounts[-1]` is undefined, so a new address takes this branch.
-    const existing = accounts[found];
-    if (existing === undefined) {
-      // Payload indexes are u8.
-      if (accounts.length === 256)
-        throw new Error("sync payload has more than 256 accounts");
-      accounts.push(meta);
-      return accounts.length - 1;
-    }
-    accounts[found] = {
-      ...existing,
-      ...("signer" in meta ? { signer: meta.signer } : {}),
-      role: mergeRoles(existing.role, meta.role),
-    } as AccountMeta;
-    return found;
-  };
-  indexOf({ address: vault, role: AccountRole.WRITABLE });
-  const writer = new ByteWriter().u8(instructions.length);
-  for (const instruction of instructions) {
-    writer.u8(
-      indexOf({
-        address: instruction.programAddress,
-        role: AccountRole.READONLY,
-      }),
-    );
-    const metas = instruction.accounts ?? [];
-    writer.u8(metas.length);
-    for (const meta of metas) writer.u8(indexOf(meta));
-    const data = instruction.data ?? new Uint8Array();
-    writer.u16(data.length).bytes(data);
-  }
-  // The vault starts writable, so merging never narrows it; only its signer
-  // flag is dropped.
-  const outer = accounts.map(
-    (meta): AccountMeta =>
-      meta.address === vault
-        ? { address: vault, role: AccountRole.WRITABLE }
-        : meta,
+  return compileInnerInstructions(
+    instructions,
+    [{ address: vault, role: AccountRole.WRITABLE }],
+    vault,
   );
-  return { payload: writer.finish(), accounts: outer };
 }
 
 /**

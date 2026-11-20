@@ -20,8 +20,9 @@ import {
   type KeyRecord,
 } from "../src/keyRecord.js";
 import { currentKeyRecord, type VaultRegistry } from "../src/registry.js";
-import { checkOwnEntry, memberFromKeypair } from "../src/smartAccount.js";
-import { vaultAddress } from "../src/squads.js";
+import { checkOwnEntry } from "../src/smart-account/flows.js";
+import { memberFromKeypair } from "../src/vault.js";
+import { vaultAddress } from "../src/smart-account/program.js";
 import {
   accountClient,
   publish,
