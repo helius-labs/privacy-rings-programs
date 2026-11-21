@@ -29,6 +29,16 @@ A Squads smart account with your wallet as its only signer, threshold 1. Its
 vault owns the record and signs through `executeTransactionSyncV2`; rotate
 adds a vote-only signer or removes one with `executeSettingsTransactionSync`.
 
+`smart-account/spend.ts` uses the shared key itself. Its setup function,
+`setupPrivateSmartAccount` in `common.ts`, creates a smart account with a
+fresh member as its only signer and key record 0 for that member, registers
+the vault in the user registry and deposits 0.01 SOL into the vault's
+shielded balance. The
+example then has the member recover the vault's keys from the key record,
+sync the vault's UTXOs, and pay a shielded recipient through
+`executeTransactionSyncV2`, with Squads signing the SPP `transact` as the
+vault.
+
 ### swig
 
 A Swig wallet with your wallet as its view key authority, the root role. The
@@ -38,15 +48,18 @@ one.
 
 ## Run
 
-Use Node.js 24+ and pnpm. Build the SDK first, since the examples import its
-compiled package. Fund the wallet with SOL on the selected cluster.
+Use Node.js 24+ and pnpm. The SDK and the examples are one pnpm workspace:
+install once from `shared-key-storage/`, then build the SDK, since the
+examples import its compiled package. Fund the wallet with SOL on the
+selected cluster.
 
 ```bash
-(cd ../sdk && pnpm install && pnpm build)
-pnpm install
+(cd .. && pnpm install)
+(cd ../sdk && pnpm build)
 export SOLANA_RPC_URL='https://devnet.helius-rpc.com/?api-key=YOUR_KEY'
 pnpm smart-account-create [file]                                  # smart account and record 0
 pnpm smart-account-rotate <settings> add|remove <signer> [file]
+pnpm smart-account-spend                                          # private account, deposit and spend
 pnpm swig-create [file]                                           # Swig and record 0
 pnpm swig-rotate <swig> add|remove <member> [file]
 ```

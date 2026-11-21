@@ -1,0 +1,6 @@
+{
+  "name": "@heliuslabs/shared-key-storage-workspace",
+  "private": true,
+  "description": "The Shared Key Storage SDK and its examples, sharing one install",
+  "packageManager": "pnpm@11.18.0"
+}

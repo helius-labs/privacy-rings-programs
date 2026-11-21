@@ -6,8 +6,13 @@ settings:
 
 importers:
 
-  .:
+  .: {}
+
+  examples:
     dependencies:
+      '@heliuslabs/shared-key-storage':
+        specifier: workspace:*
+        version: link:../sdk
       '@heliuslabs/spr':
         specifier: 0.9.0-alpha
         version: 0.9.0-alpha(@solana/kit@8.6.0(typescript@7.0.2))(typescript@7.0.2)
@@ -15,6 +20,27 @@ importers:
         specifier: ^8.3.0
         version: 8.6.0(typescript@7.0.2)
     devDependencies:
+      '@types/node':
+        specifier: ^24.0.0
+        version: 24.19.2
+      oxfmt:
+        specifier: ^0.61.0
+        version: 0.61.0
+      tsx:
+        specifier: latest
+        version: 4.23.15
+      typescript:
+        specifier: ^7.0.2
+        version: 7.0.2
+
+  sdk:
+    devDependencies:
+      '@heliuslabs/spr':
+        specifier: 0.9.0-alpha
+        version: 0.9.0-alpha(@solana/kit@8.6.0(typescript@7.0.2))(typescript@7.0.2)
+      '@solana/kit':
+        specifier: ^8.3.0
+        version: 8.6.0(typescript@7.0.2)
       '@types/node':
         specifier: ^24.0.0
         version: 24.19.2
@@ -1053,8 +1079,8 @@ packages:
   whatwg-url@5.0.0:
     resolution: {integrity: sha512-saE57nupxk6v3HY35+jzBwYa0rKSy0XR8JSxZPwgLr7ys0IBzhGviA1/TUGJLmSVqs8pb9AnvICXEuOHLprYTw==}
 
-  ws@8.22.2:
-    resolution: {integrity: sha512-/rEZ2ejown2N5gxVTHUu9bVVC7ttu0/Tgzf5hbTOixR3Fs7mbbXgn2DbdbcKgJOmpQMtrIUWivtYuVMnp/W/yA==}
+  ws@8.23.0:
+    resolution: {integrity: sha512-wCkmX8QMOrKjgO8HW2WyDbTSGeqkocxgDzS9iR79rEAexty6/2qzilx3Ag8Tqf9ykop3irLKle0MtVn5qjVnoQ==}
     engines: {node: '>=10.0.0'}
     peerDependencies:
       bufferutil: ^4.0.1
@@ -1577,7 +1603,7 @@ snapshots:
       '@solana/functional': 8.6.0(typescript@7.0.2)
       '@solana/rpc-subscriptions-spec': 8.6.0(typescript@7.0.2)
       '@solana/subscribable': 8.6.0(typescript@7.0.2)
-      ws: 8.22.2
+      ws: 8.23.0
     optionalDependencies:
       typescript: 7.0.2
     transitivePeerDependencies:
@@ -2045,4 +2071,4 @@ snapshots:
       tr46: 0.0.3
       webidl-conversions: 3.0.1
 
-  ws@8.22.2: {}
+  ws@8.23.0: {}

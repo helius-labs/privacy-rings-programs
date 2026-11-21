@@ -5,8 +5,12 @@ and reading encrypted key records, stored in SPL Record accounts, and for
 creating, registering, rotating and spending from private Squads smart
 accounts and Swig wallets.
 
-Use Node.js 24+ and run `pnpm install`, then `pnpm build` from this directory.
-Run `pnpm pack` to build a tarball for local installation in another project.
+Use Node.js 24+. Run `pnpm install` from `shared-key-storage/`, which installs
+the SDK and the [examples](../examples/) as one workspace, then `pnpm build`
+from this directory. Run `pnpm pack` to build a tarball for local
+installation in another project; it needs `@heliuslabs/spr` and
+`@solana/kit` installed next to it, as peer dependencies, so the project and
+the SDK share one copy of each.
 
 ```ts
 import { storagePointerAddress } from "@heliuslabs/shared-key-storage";

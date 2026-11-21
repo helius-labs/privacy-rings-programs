@@ -1,4 +1,7 @@
-/** Connection, keypair and transaction helpers shared by the examples. */
+/**
+ * Connection, keypair and transaction helpers shared by the examples, and the
+ * setup of the spend example.
+ */
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -14,6 +17,7 @@ import {
   getSignatureFromTransaction,
   pipe,
   sendTransactionWithoutConfirmingFactory,
+  setTransactionMessageConfig,
   setTransactionMessageFeePayerSigner,
   setTransactionMessageLifetimeUsingBlockhash,
   signTransactionMessageWithSigners,
@@ -25,7 +29,28 @@ import {
   type Signature,
   type SolanaRpcApi,
 } from "@solana/kit";
-import { SYSTEM_PROGRAM_ADDRESS } from "@heliuslabs/shared-key-storage";
+import { SOL_MINT, Wallet, createSprClient, syncWallet } from "@heliuslabs/spr";
+import { SignedTeePolicy, type SprClient } from "@heliuslabs/spr/client";
+import { DepositAsset, depositInstruction } from "@heliuslabs/spr/interface";
+import {
+  ShieldedAddress,
+  ShieldedKeypair,
+  X25519PublicKey,
+  initializePoseidon,
+} from "@heliuslabs/spr/keypair";
+import {
+  AssetRegistry,
+  type LocalShieldedKeys,
+} from "@heliuslabs/spr/transaction";
+import {
+  Permission,
+  SYSTEM_PROGRAM_ADDRESS,
+  createSmartAccount,
+  memberFromKeypair,
+  prepareKeyRecordUpload,
+  registerVaultInstruction,
+  type Member,
+} from "@heliuslabs/shared-key-storage";
 
 export type SolanaRpc = Rpc<SolanaRpcApi>;
 
@@ -35,7 +60,7 @@ export type SolanaRpc = Rpc<SolanaRpcApi>;
  * rent and signs every transaction.
  */
 export async function setup(): Promise<
-  Readonly<{ rpc: SolanaRpc; wallet: KeyPairSigner }>
+  Readonly<{ rpc: SolanaRpc; rpcUrl: string; wallet: KeyPairSigner }>
 > {
   const rpcUrl = process.env["SOLANA_RPC_URL"]?.trim();
   if (!rpcUrl) throw new Error("set SOLANA_RPC_URL, e.g. a devnet RPC URL");
@@ -43,7 +68,7 @@ export async function setup(): Promise<
   const wallet = await loadKeypair(
     process.env["PAYER_KEYPAIR"]?.trim() || "~/.config/solana/id.json",
   );
-  return { rpc, wallet };
+  return { rpc, rpcUrl, wallet };
 }
 
 async function loadKeypair(path: string): Promise<KeyPairSigner> {
@@ -76,21 +101,44 @@ export async function recordBytes(
   return new TextEncoder().encode(sample);
 }
 
-/** Signs with every signer the instructions name and waits for confirmation. */
+/**
+ * Signs with every signer the instructions name and waits for confirmation.
+ * `large` sends a version 1 transaction (up to 4,096 bytes) with the maximum
+ * compute, which shielded pool instructions and their proofs need.
+ */
 export async function send(
   rpc: SolanaRpc,
   feePayer: KeyPairSigner,
   instructions: readonly Instruction[],
+  { large = false }: Readonly<{ large?: boolean }> = {},
 ): Promise<Signature> {
   const { value: lifetime } = await rpc.getLatestBlockhash().send();
   const signed = await signTransactionMessageWithSigners(
-    pipe(
-      createTransactionMessage({ version: 0 }),
-      (message) => setTransactionMessageFeePayerSigner(feePayer, message),
-      (message) =>
-        setTransactionMessageLifetimeUsingBlockhash(lifetime, message),
-      (message) => appendTransactionMessageInstructions(instructions, message),
-    ),
+    large
+      ? pipe(
+          createTransactionMessage({ version: 1 }),
+          (message) => setTransactionMessageFeePayerSigner(feePayer, message),
+          (message) =>
+            setTransactionMessageLifetimeUsingBlockhash(lifetime, message),
+          (message) =>
+            setTransactionMessageConfig(
+              {
+                computeUnitLimit: 1_400_000,
+                loadedAccountsDataSizeLimit: 64 * 1024 * 1024,
+              },
+              message,
+            ),
+          (message) =>
+            appendTransactionMessageInstructions(instructions, message),
+        )
+      : pipe(
+          createTransactionMessage({ version: 0 }),
+          (message) => setTransactionMessageFeePayerSigner(feePayer, message),
+          (message) =>
+            setTransactionMessageLifetimeUsingBlockhash(lifetime, message),
+          (message) =>
+            appendTransactionMessageInstructions(instructions, message),
+        ),
   );
   assertIsTransactionWithBlockhashLifetime(signed);
   await sendTransactionWithoutConfirmingFactory({ rpc })(signed, {
@@ -192,4 +240,137 @@ export async function balance(
     .getBalance(account, { commitment: "confirmed" })
     .send();
   return value;
+}
+
+/** Lamports deposited into the vault's shielded balance. */
+export const DEPOSIT = 10_000_000n;
+/** Lamports for the vault's own rent and fees: registry record and SPP fees. */
+const VAULT_SOL = 20_000_000n;
+
+const NETWORKS: Readonly<Record<string, "devnet" | "mainnet">> = {
+  EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG: "devnet",
+  "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d": "mainnet",
+};
+
+/**
+ * 1. Connect to the shielded pool and attest its prover.
+ * 2. Create the smart account with key record 0 for the member, and fund its
+ *    vault.
+ * 3. Upload record 0 and Register: the vault registers its shared keys in
+ *    the user registry and publishes the record.
+ * 4. Deposit `DEPOSIT` into the vault's shielded address, which anyone can
+ *    derive from the record's public keys.
+ */
+export async function setupPrivateSmartAccount(): Promise<
+  Readonly<{
+    client: SprClient;
+    rpc: SolanaRpc;
+    wallet: KeyPairSigner;
+    member: Member;
+    settings: Address;
+    vault: Address;
+  }>
+> {
+  const { rpc, rpcUrl, wallet } = await setup();
+  const genesis = await rpc.getGenesisHash().send();
+  const network = NETWORKS[genesis];
+  if (network === undefined) throw new Error("use a devnet or mainnet RPC");
+  await initializePoseidon();
+  const client = await createSprClient({
+    solanaRpcUrl: rpcUrl,
+    proverTee: SignedTeePolicy.forNetwork(network),
+    proofDataSource: "prover",
+  });
+  await client.attestProver();
+  await client.checkProverProvingKeys();
+
+  const member = memberFromKeypair(ShieldedKeypair.generate());
+  const created = await createSmartAccount({
+    client,
+    creator: wallet,
+    threshold: 1,
+    signers: [
+      {
+        key: member.signer.address,
+        permissions: Permission.All,
+        viewingPublicKey: member.keypair.viewingPublicKey(),
+      },
+    ],
+  });
+  console.log(`create ${created.settings}`);
+  await send(rpc, wallet, [
+    created.instruction,
+    transferSol(wallet, created.vault, VAULT_SOL),
+  ]);
+
+  console.log("upload key record 0");
+  const recordUpload = await prepareKeyRecordUpload({
+    owner: created.vault,
+    payer: wallet,
+    record: created.record,
+  });
+  await upload(rpc, wallet, recordUpload.transactions);
+  const register = await registerVaultInstruction({
+    client,
+    settings: created.settings,
+    approvers: [member.signer],
+    record: created.record,
+    upload: recordUpload.address,
+  });
+  console.log(
+    `register: ${await send(rpc, wallet, [register], { large: true })}`,
+  );
+
+  const vault = ShieldedAddress.forPda({
+    pda: created.vault,
+    nullifierPublicKey: created.record.nullifierPublicKey,
+    viewingPublicKey: X25519PublicKey.fromBytes(
+      created.record.sharedViewingPublicKey,
+    ),
+  });
+  const deposit = await depositInstruction({
+    tree: client.tree,
+    depositor: wallet,
+    deposits: [
+      {
+        asset: DepositAsset.sol(),
+        viewTag: vault.confidentialViewTag(),
+        recipientOwnerHash: vault.ownerHash(),
+        amount: DEPOSIT,
+      },
+    ],
+  });
+  console.log(
+    `deposit: ${await send(rpc, wallet, [deposit], { large: true })}`,
+  );
+  return {
+    client,
+    rpc,
+    wallet,
+    member,
+    settings: created.settings,
+    vault: created.vault,
+  };
+}
+
+/**
+ * Syncs the shielded wallet of `address` until its SOL balance is
+ * `expected`; the indexer can lag the RPC.
+ */
+export async function syncedBalance(
+  client: SprClient,
+  address: ShieldedAddress,
+  keys: LocalShieldedKeys,
+  expected: bigint,
+): Promise<Wallet> {
+  for (let attempt = 0; attempt < 120; attempt += 1) {
+    const wallet = new Wallet({
+      identity: address,
+      registry: new AssetRegistry(),
+    });
+    await syncWallet({ wallet, keys, client, config: { pageLimit: 50 } });
+    if (wallet.balance(SOL_MINT).amount === expected) return wallet;
+    await sleep(1000);
+  }
+  throw new Error(`${address.solanaAddress()} never reached ${expected}`);
 }
