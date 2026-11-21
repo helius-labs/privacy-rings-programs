@@ -6,8 +6,13 @@ settings:
 
 importers:
 
-  .:
+  .: {}
+
+  examples:
     dependencies:
+      '@heliuslabs/shared-key-storage':
+        specifier: workspace:*
+        version: link:../sdk
       '@heliuslabs/spr':
         specifier: 0.9.0-alpha
         version: 0.9.0-alpha(@solana/kit@8.6.0(typescript@7.0.2))(typescript@7.0.2)
@@ -18,6 +23,30 @@ importers:
       '@types/node':
         specifier: ^24.0.0
         version: 24.19.2
+      oxfmt:
+        specifier: ^0.61.0
+        version: 0.61.0
+      tsx:
+        specifier: latest
+        version: 4.23.15
+      typescript:
+        specifier: ^7.0.2
+        version: 7.0.2
+
+  sdk:
+    devDependencies:
+      '@heliuslabs/spr':
+        specifier: 0.9.0-alpha
+        version: 0.9.0-alpha(@solana/kit@8.6.0(typescript@7.0.2))(typescript@7.0.2)
+      '@solana/kit':
+        specifier: ^8.3.0
+        version: 8.6.0(typescript@7.0.2)
+      '@types/node':
+        specifier: ^24.0.0
+        version: 24.19.2
+      litesvm:
+        specifier: 1.6.2
+        version: 1.6.2(typescript@7.0.2)
       oxfmt:
         specifier: ^0.61.0
         version: 0.61.0
@@ -936,6 +965,50 @@ packages:
   inherits@2.0.4:
     resolution: {integrity: sha512-k/vGaX4/Yla3WzyMCvTQOXYeIHvqOKtnqBduzTHpzpQZzAskKMhZ2K+EnBiSM9zGSoIFeMpXKxa4dYeZIQqewQ==}
 
+  litesvm-darwin-arm64@1.6.2:
+    resolution: {integrity: sha512-J3JKQaLdK2nQcdrDg8GB3xis8VlrFG2MJwUTTzdRgrvo291RrAdEo8qoO3zzC/BU5jgwsvBCgX4LD2zqdAjOyw==}
+    engines: {node: '>= 20'}
+    cpu: [arm64]
+    os: [darwin]
+
+  litesvm-darwin-x64@1.6.2:
+    resolution: {integrity: sha512-zdAw4c7KnOcysHkUVrPBH2+x+4+7ViYYD8hWYYqZ7OOT4HFFsAV5iIhjul+bl5fMU9qae55lvD1RF4fK1rCgbg==}
+    engines: {node: '>= 20'}
+    cpu: [x64]
+    os: [darwin]
+
+  litesvm-linux-arm64-gnu@1.6.2:
+    resolution: {integrity: sha512-vMWOPszLOyT3oQxAdANSzSUpJ1uEdTUArI+zruXSW1/nrXn/3zagOBrDxjZhQi0QqK9wT6QN32DfDTfB4xjS/A==}
+    engines: {node: '>= 20'}
+    cpu: [arm64]
+    os: [linux]
+    libc: [glibc]
+
+  litesvm-linux-arm64-musl@1.6.2:
+    resolution: {integrity: sha512-Xw3KPkJEQ90LSOWP2xCGdOO4Y/dRdXJWGTgI8jNObGs0x/Apu0TOXuec/XZUNCvEba4aRwM/Wo3nS6llq5uAng==}
+    engines: {node: '>= 20'}
+    cpu: [arm64]
+    os: [linux]
+    libc: [musl]
+
+  litesvm-linux-x64-gnu@1.6.2:
+    resolution: {integrity: sha512-6kTBeCnGnAGqPH0ifxix/VGiVVCKBH9zrcx5D2zzZ9ZZkqJEQZiQxGxR36WccYYTWxOxN76M7YDtI9tuMhgw5g==}
+    engines: {node: '>= 20'}
+    cpu: [x64]
+    os: [linux]
+    libc: [glibc]
+
+  litesvm-linux-x64-musl@1.6.2:
+    resolution: {integrity: sha512-55R3umCLBkX2f+9J55yHAgY5n1zpgzJH/njLnrXFYzTrwv836qR4FsTjIPuxX4QqvnBleJpF2h4wrc+/5R5S+Q==}
+    engines: {node: '>= 20'}
+    cpu: [x64]
+    os: [linux]
+    libc: [musl]
+
+  litesvm@1.6.2:
+    resolution: {integrity: sha512-eh6yZg35NiL7CCCBgaLCXvLm+zFF5QaZnAo6ovbbTQDY63wJSzYLc2KqOwowO7d3pNQkJti8toXYL12H0Qyu7A==}
+    engines: {node: '>= 20'}
+
   minimalistic-assert@1.0.1:
     resolution: {integrity: sha512-UtJcAD4yEaGtjPezWuO9wC4nwUnVH/8/Im3yEHQP4b67cXlD/Qr9hdITCU1xDbSEXg2XKNaP8jsReV7vQd00/A==}
 
@@ -1006,8 +1079,8 @@ packages:
   whatwg-url@5.0.0:
     resolution: {integrity: sha512-saE57nupxk6v3HY35+jzBwYa0rKSy0XR8JSxZPwgLr7ys0IBzhGviA1/TUGJLmSVqs8pb9AnvICXEuOHLprYTw==}
 
-  ws@8.22.2:
-    resolution: {integrity: sha512-/rEZ2ejown2N5gxVTHUu9bVVC7ttu0/Tgzf5hbTOixR3Fs7mbbXgn2DbdbcKgJOmpQMtrIUWivtYuVMnp/W/yA==}
+  ws@8.23.0:
+    resolution: {integrity: sha512-wCkmX8QMOrKjgO8HW2WyDbTSGeqkocxgDzS9iR79rEAexty6/2qzilx3Ag8Tqf9ykop3irLKle0MtVn5qjVnoQ==}
     engines: {node: '>=10.0.0'}
     peerDependencies:
       bufferutil: ^4.0.1
@@ -1530,7 +1603,7 @@ snapshots:
       '@solana/functional': 8.6.0(typescript@7.0.2)
       '@solana/rpc-subscriptions-spec': 8.6.0(typescript@7.0.2)
       '@solana/subscribable': 8.6.0(typescript@7.0.2)
-      ws: 8.22.2
+      ws: 8.23.0
     optionalDependencies:
       typescript: 7.0.2
     transitivePeerDependencies:
@@ -1876,6 +1949,42 @@ snapshots:
 
   inherits@2.0.4: {}
 
+  litesvm-darwin-arm64@1.6.2:
+    optional: true
+
+  litesvm-darwin-x64@1.6.2:
+    optional: true
+
+  litesvm-linux-arm64-gnu@1.6.2:
+    optional: true
+
+  litesvm-linux-arm64-musl@1.6.2:
+    optional: true
+
+  litesvm-linux-x64-gnu@1.6.2:
+    optional: true
+
+  litesvm-linux-x64-musl@1.6.2:
+    optional: true
+
+  litesvm@1.6.2(typescript@7.0.2):
+    dependencies:
+      '@solana-program/system': 0.14.1(@solana/kit@8.6.0(typescript@7.0.2))
+      '@solana-program/token': 0.16.1(@solana/kit@8.6.0(typescript@7.0.2))
+      '@solana/kit': 8.6.0(typescript@7.0.2)
+    optionalDependencies:
+      litesvm-darwin-arm64: 1.6.2
+      litesvm-darwin-x64: 1.6.2
+      litesvm-linux-arm64-gnu: 1.6.2
+      litesvm-linux-arm64-musl: 1.6.2
+      litesvm-linux-x64-gnu: 1.6.2
+      litesvm-linux-x64-musl: 1.6.2
+    transitivePeerDependencies:
+      - bufferutil
+      - fastestsmallesttextencoderdecoder
+      - typescript
+      - utf-8-validate
+
   minimalistic-assert@1.0.1: {}
 
   minimalistic-crypto-utils@1.0.1: {}
@@ -1962,4 +2071,4 @@ snapshots:
       tr46: 0.0.3
       webidl-conversions: 3.0.1
 
-  ws@8.22.2: {}
+  ws@8.23.0: {}

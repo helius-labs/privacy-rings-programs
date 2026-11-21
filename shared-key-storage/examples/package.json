@@ -1,0 +1,38 @@
+{
+  "name": "@heliuslabs/shared-key-storage-examples",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Private Squads smart accounts and Swig wallets built on the Shared Key Storage SDK: helpers, scripts and tests",
+  "type": "module",
+  "scripts": {
+    "check": "oxfmt --check . && tsc --noEmit",
+    "build:sdk": "pnpm --filter @heliuslabs/shared-key-storage build",
+    "test": "pnpm build:sdk && node --import tsx --test test/*.test.ts test/smart-account/*.test.ts test/swig/*.test.ts",
+    "test:devnet": "pnpm build:sdk && SA_NETWORK=devnet node --import tsx --test --test-concurrency=1 test/network/*.test.ts",
+    "test:mainnet": "pnpm build:sdk && SA_NETWORK=mainnet node --import tsx --test --test-concurrency=1 test/network/*.test.ts",
+    "smart-account-create": "node --import tsx smart-account/create.ts",
+    "smart-account-rotate": "node --import tsx smart-account/rotate.ts",
+    "smart-account-recover": "node --import tsx smart-account/recover.ts",
+    "smart-account-spend": "node --import tsx smart-account/spend.ts",
+    "smart-account-close": "node --import tsx smart-account/close.ts",
+    "swig-create": "node --import tsx swig/create.ts",
+    "swig-rotate": "node --import tsx swig/rotate.ts",
+    "swig-recover": "node --import tsx swig/recover.ts",
+    "swig-spend": "node --import tsx swig/spend.ts",
+    "swig-close": "node --import tsx swig/close.ts"
+  },
+  "dependencies": {
+    "@heliuslabs/shared-key-storage": "workspace:*",
+    "@heliuslabs/spr": "0.9.0-alpha",
+    "@solana/kit": "^8.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "oxfmt": "^0.61.0",
+    "tsx": "latest",
+    "typescript": "^7.0.2"
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}
