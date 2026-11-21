@@ -33,11 +33,11 @@ import {
   type TransactionSigner,
 } from "@solana/kit";
 import { ByteReader, ByteWriter, bytesEqual } from "../bytes.js";
-import { SYSTEM_PROGRAM_ADDRESS } from "../cpi.js";
 import {
   MAX_RECORD_SIZE,
   RECORD_HEADER_SIZE,
   RECORD_PROGRAM_ADDRESS,
+  SYSTEM_PROGRAM_ADDRESS,
   decodeRecordAccount,
   recordCloseInstruction,
   recordInitializeInstruction,
@@ -395,5 +395,31 @@ export async function publishRecordInstructions(
     recordInitializeInstruction(pointer, owner),
     frozenCheck,
     recordWriteInstruction(pointer, ownerSigner, 0, pointerData),
+  ];
+}
+
+/**
+ * The owner's removal of its published record: closes `current`, the record
+ * its pointer names, and the pointer itself. Both rents go to the owner. The
+ * Record program rejects the transaction unless the owner is the authority
+ * of both accounts. Afterwards the owner has no published record, and a first
+ * publication can create the pointer again.
+ */
+export async function removeRecordInstructions(
+  input: Readonly<{
+    owner: Address;
+    /** The current published record, as `fetchPublishedRecord` returns it. */
+    current: Address;
+  }>,
+): Promise<Instruction[]> {
+  const { owner, current } = input;
+  const ownerSigner = { address: owner, role: AccountRole.READONLY_SIGNER };
+  return [
+    recordCloseInstruction(current, ownerSigner, owner),
+    recordCloseInstruction(
+      await storagePointerAddress(owner),
+      ownerSigner,
+      owner,
+    ),
   ];
 }

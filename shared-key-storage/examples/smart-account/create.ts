@@ -1,96 +1,101 @@
 /**
- * Creates a Squads smart account and publishes its first record. The smart
- * account's vault owns the record; your wallet is its only signer
- * (threshold 1) and pays for everything.
+ * Creates a private Squads smart account for three members, Alice, Bob and
+ * Carol, with threshold 2, and publishes its first key record. The record
+ * holds one shared viewing key, encrypted to each member.
  *
- * 1. Create the smart account and fund its vault, which pays the pointer's
- *    rent.
- * 2. Upload: create a Record account, write the bytes in chunks, then hand
- *    its authority to the vault, which freezes the bytes.
- * 3. Publish: `executeTransactionSyncV2` has the vault create its pointer and
- *    write the record's address and hash into it.
+ * 1. Register each member's own keys in the user registry, where a later
+ *    rotation reads them.
+ * 2. Create the smart account and key record 0, and fund the vault, which
+ *    pays the rent of its registry record and storage pointer.
+ * 3. Upload the record into a Record account and freeze it under the vault.
+ * 4. Register: Alice and Bob each check the upload, their own entry and the
+ *    instruction, then co-sign `executeTransactionSyncV2`. The vault
+ *    registers the shared keys in the user registry and publishes the record.
+ * 5. Assert that every member recovers the shared keys from the record.
  *
- * Run: pnpm smart-account-create [file]
+ * Run: pnpm smart-account-create
  */
+import { storagePointerAddress } from "@heliuslabs/shared-key-storage";
+import { createSmartAccount } from "../helpers/smart-account/create.js";
+import { Permission } from "../helpers/smart-account/program.js";
+import { recoverVaultKeys } from "../helpers/smart-account/recover.js";
 import {
-  Permission,
-  checkUploadedRecord,
-  createSmartAccountInstruction,
-  decodeProgramConfig,
-  executeTransactionSyncInstruction,
-  fetchPublishedRecord,
-  prepareRecordUpload,
-  programConfigAddress,
-  publishRecordInstructions,
-  settingsAddress,
-  storagePointerAddress,
-  vaultAddress,
-} from "@heliuslabs/shared-key-storage";
+  checkRegistration,
+  registerVaultInstruction,
+} from "../helpers/smart-account/register.js";
 import {
-  accountData,
-  recordBytes,
+  VAULT_SOL,
+  assertMembersRecover,
+  connect,
+  ensureRegistered,
+  recipient,
   send,
-  setup,
   transferSol,
-  upload,
+  uploadKeyRecord,
 } from "../common.js";
 
-const { rpc, wallet } = await setup();
-const bytes = await recordBytes(
-  `Squads record 0, created ${new Date().toISOString()}`,
-  process.argv[2],
-);
+const session = await connect();
+const { client, rpc, wallet, alice, bob, carol } = session;
+const members = [alice, bob, carol];
 
-// The Settings address comes from the Squads account counter, so another
-// account created in between makes the create fail; run again then.
-const config = decodeProgramConfig(
-  await accountData(rpc, await programConfigAddress()),
-);
-const settings = await settingsAddress(config.smartAccountIndex + 1n);
-const vault = await vaultAddress(settings);
-const create = await createSmartAccountInstruction({
+// 1. Register the members.
+for (const member of members) await ensureRegistered(session, member);
+
+// 2. Create.
+const created = await createSmartAccount({
+  client,
   creator: wallet,
-  treasury: config.treasury,
-  settings,
-  signers: [{ key: wallet.address, permissions: Permission.All }],
-  threshold: 1,
+  threshold: 2,
+  signers: members.map((member) => ({
+    ...recipient(member),
+    permissions: Permission.All,
+  })),
 });
+const { settings, vault, record } = created;
 console.log(
   `created smart account ${settings}: ${await send(rpc, wallet, [
-    create,
-    transferSol(wallet, vault, 10_000_000n),
+    created.instruction,
+    transferSol(wallet, vault, VAULT_SOL),
   ])}`,
 );
 
-const prepared = await prepareRecordUpload({
-  owner: vault,
-  payer: wallet,
-  bytes,
-});
-console.log(`uploading ${bytes.length} bytes to ${prepared.address}`);
-await upload(rpc, wallet, prepared.transactions);
+// 3. Upload.
+const upload = await uploadKeyRecord(session, vault, record);
 
-// Check the frozen upload, then publish it as the vault.
-await checkUploadedRecord(rpc, vault, prepared.address, bytes);
-const publish = await executeTransactionSyncInstruction({
+// 4. Register, approved by Alice and Bob.
+const approvers = [alice, bob];
+const register = await registerVaultInstruction({
+  client,
   settings,
-  approvers: [wallet],
-  inner: await publishRecordInstructions({
-    owner: vault,
-    upload: prepared.address,
-    predecessor: undefined,
-    bytes,
-  }),
+  approvers: approvers.map((approver) => approver.signer),
+  record,
+  upload,
 });
-console.log(`published: ${await send(rpc, wallet, [publish])}`);
+for (const approver of approvers) {
+  await checkRegistration({
+    client,
+    settings,
+    record,
+    upload,
+    member: approver,
+    approvers: approvers.map((each) => each.signer.address),
+    proposed: [register],
+  });
+  console.log(`${approver.name} checked the record and the instruction`);
+}
+console.log(
+  `registered: ${await send(rpc, wallet, [register], { large: true })}`,
+);
 
-const published = await fetchPublishedRecord(rpc, vault);
-if (published === undefined) throw new Error("record was not published");
+// 5. Every member recovers the shared keys.
+await assertMembersRecover({
+  members,
+  expected: record,
+  recover: (member) => recoverVaultKeys({ client, settings, member }),
+});
+
 console.log(`settings: ${settings}`);
 console.log(`vault:    ${vault}`);
 console.log(`pointer:  ${await storagePointerAddress(vault)}`);
-console.log(`record:   ${published.address}`);
-console.log(`content:  ${new TextDecoder().decode(published.bytes)}`);
-console.log(
-  `next:     pnpm smart-account-rotate ${settings} add <signer address>`,
-);
+console.log(`record:   ${upload}`);
+console.log(`next:     pnpm smart-account-rotate ${settings}`);

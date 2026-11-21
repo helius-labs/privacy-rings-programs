@@ -1,6 +1,6 @@
 /**
- * A LiteSVM chain for the storage and Swig tests, loaded with program
- * binaries dumped from mainnet (`test/fixtures/`).
+ * A LiteSVM chain for the storage tests, loaded with the Record program
+ * binary dumped from mainnet (`test/fixtures/`).
  */
 import { fileURLToPath } from "node:url";
 import {
@@ -21,10 +21,8 @@ import {
 import { FailedTransactionMetadata, LiteSVM } from "litesvm";
 import { type RecordUpload, type StorageRpc } from "../src/record/storage.js";
 import { RECORD_PROGRAM_ADDRESS } from "../src/record/program.js";
-import { SWIG_PROGRAM_ADDRESS } from "../src/swig/program.js";
 
 export const RECORD_SO = fixture("spl_record.so");
-export const SWIG_SO = fixture("swig.so");
 /** The fee of a transaction with one signature. */
 export const FEE = 5000n;
 const transactionEncoder = getTransactionEncoder();
@@ -33,13 +31,12 @@ function fixture(name: string): string {
   return fileURLToPath(new URL(`./fixtures/${name}`, import.meta.url));
 }
 
-/** A LiteSVM with the mainnet Record and Swig binaries. */
+/** A LiteSVM with the mainnet Record binary. */
 export class Chain {
   readonly svm = new LiteSVM();
 
   constructor() {
     this.svm.addProgramFromFile(RECORD_PROGRAM_ADDRESS, RECORD_SO);
-    this.svm.addProgramFromFile(SWIG_PROGRAM_ADDRESS, SWIG_SO);
   }
 
   async wallet(sol = 10n): Promise<KeyPairSigner> {

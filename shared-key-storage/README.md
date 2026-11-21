@@ -19,8 +19,8 @@ custom program. A pointer account per vault names the current record.
 > it uses is unaudited too. Nothing checks on chain that a key record opens
 > for every signer.
 
-| Path                     | Contents                                                |
-| ------------------------ | ------------------------------------------------------- |
-| [`design.md`](design.md) | Flows, key record format and limitations                |
-| [`sdk/`](sdk/)           | TypeScript SDK, tests and how to run them               |
-| [`examples/`](examples/) | Squads and Swig scripts that create and rotate a record |
+| Path                     | Contents                                                       |
+| ------------------------ | -------------------------------------------------------------- |
+| [`design.md`](design.md) | Flows, key record format and limitations                       |
+| [`sdk/`](sdk/)           | TypeScript SDK: create, update, remove and recover key records |
+| [`examples/`](examples/) | Squads and Swig helpers, scripts and the network tests         |

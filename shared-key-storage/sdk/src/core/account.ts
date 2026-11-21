@@ -1,7 +1,7 @@
 /**
- * What the wallet-agnostic actions read from chain: account data and the
- * vault's current key record. `smart-account/` and `swig/` wrap the actions
- * in `core/` in the wallet's own instructions.
+ * What the wallet-agnostic actions read from chain: the vault's registered
+ * viewing key and its current key record. The caller wraps the actions in `core/` in the
+ * instructions of the wallet program that signs for the vault.
  *
  * `accountId` is the wallet account a key record is bound to (the Squads
  * Settings or the Swig account), `vault` the address that signs for it and
@@ -17,17 +17,6 @@ import {
   fetchPublishedKeyRecord,
   type KeyRecordPublication,
 } from "../record/keyRecordStorage.js";
-
-export async function accountData(
-  client: SprClient,
-  account: Address,
-): Promise<Uint8Array | undefined> {
-  const { value } = await client.solanaRpc
-    .getAccountInfo(account, { encoding: "base64", commitment: "confirmed" })
-    .send();
-  if (value === null) return undefined;
-  return new Uint8Array(Buffer.from(value.data[0], "base64"));
-}
 
 /** What the user registry and the storage pointer say about the vault's keys. */
 export interface VaultRegistry {

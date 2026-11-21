@@ -2,7 +2,7 @@
   "name": "@heliuslabs/shared-key-storage",
   "version": "0.1.0",
   "private": true,
-  "description": "TypeScript SDK for Shared Key Storage on the SPL Record program, for private Squads smart accounts and Swig wallets",
+  "description": "TypeScript SDK for Shared Key Storage: encrypted key records on the SPL Record program",
   "files": [
     "dist"
   ],
@@ -17,9 +17,7 @@
     "build": "tsc -p tsconfig.build.json",
     "check": "oxfmt --check . && tsc --noEmit",
     "prepack": "pnpm run build",
-    "test": "node --import tsx --test test/*.test.ts test/record/*.test.ts test/smart-account/*.test.ts test/swig/*.test.ts",
-    "test:devnet": "SA_NETWORK=devnet node --import tsx --test --test-concurrency=1 test/network/*.test.ts",
-    "test:mainnet": "SA_NETWORK=mainnet node --import tsx --test --test-concurrency=1 test/network/*.test.ts"
+    "test": "node --import tsx --test test/*.test.ts test/core/*.test.ts test/record/*.test.ts"
   },
   "devDependencies": {
     "@heliuslabs/spr": "0.9.0-alpha",

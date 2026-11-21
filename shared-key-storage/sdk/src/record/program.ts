@@ -18,6 +18,10 @@ import { ByteReader, ByteWriter } from "../bytes.js";
 export const RECORD_PROGRAM_ADDRESS = address(
   "recr1L3PCGKLbckBqMNcJhuuyU1zgo8nBhfLVsJNwr5",
 );
+/** The System Program, which funds and allocates Record accounts. */
+export const SYSTEM_PROGRAM_ADDRESS = address(
+  "11111111111111111111111111111111",
+);
 /** Record account header: version (1) and authority. */
 export const RECORD_HEADER_SIZE = 1 + 32;
 /** The most data a Record account can hold: the 10 MiB account limit. */

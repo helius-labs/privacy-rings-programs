@@ -1,105 +1,113 @@
 /**
- * Adds or removes a Squads signer and replaces the smart account's record, in
- * one transaction. Your wallet must be able to approve alone: a signer with
- * every permission on a threshold-1 account, as `smart-account-create` makes. Added
- * signers may only vote, so your wallet stays the one that initiates and
- * executes.
+ * Rotates a private Squads smart account: replaces its third member and its
+ * shared viewing key in one transaction. Carol leaves and Dave joins, or the
+ * other way round if Dave is the member.
  *
- * 1. Upload the new bytes into a fresh Record account, frozen under the
- *    vault. The current record stays published meanwhile.
- * 2. One transaction: `executeTransactionSyncV2` points the pointer at the
- *    new record and closes the old one, whose rent goes to the vault; then
- *    `executeSettingsTransactionSync` adds or removes the signer.
+ * 1. Alice, the rotator, recovers the current keys and builds the next key
+ *    record: a new shared viewing key for Alice, Bob and the joining member,
+ *    with every earlier viewing key. Alice's and Bob's viewing keys come
+ *    from the user registry.
+ * 2. Upload the record and freeze it under the vault. The current record
+ *    stays published meanwhile.
+ * 3. Alice and Bob each check the upload, the key history, their own entry
+ *    and the instructions against the rotation they agree to.
+ * 4. One transaction: `executeTransactionSyncV2` has the vault set the new
+ *    viewing key in the user registry, publish the new record and close the
+ *    old one; `executeSettingsTransactionSync` swaps the signer.
+ * 5. Assert that the three members recover the new keys, including the old
+ *    viewing key, and that the member that left does not.
  *
- * Run: pnpm smart-account-rotate <settings> add|remove <signer address> [file]
+ * Run: pnpm smart-account-rotate <settings>
  */
-import { address } from "@solana/kit";
+import { fetchSettings } from "../helpers/smart-account/account.js";
+import { Permission } from "../helpers/smart-account/program.js";
+import { recoverVaultKeys } from "../helpers/smart-account/recover.js";
 import {
-  Permission,
-  checkSyncConsensus,
-  checkUploadedRecord,
-  decodeSettings,
-  executeSettingsTransactionSyncInstruction,
-  executeTransactionSyncInstruction,
-  fetchPublishedRecord,
-  prepareRecordUpload,
-  publishRecordInstructions,
-  rotationActions,
-  vaultAddress,
-} from "@heliuslabs/shared-key-storage";
-import { accountData, recordBytes, send, setup, upload } from "../common.js";
+  checkRotation,
+  rotateSmartAccount,
+} from "../helpers/smart-account/rotate.js";
+import {
+  addressArgument,
+  assertMembersRecover,
+  connect,
+  ensureRegistered,
+  membersAmong,
+  recipient,
+  send,
+  sendUpload,
+} from "../common.js";
 
-const [settingsArgument, action, signerArgument, file] = process.argv.slice(2);
-if (
-  settingsArgument === undefined ||
-  (action !== "add" && action !== "remove") ||
-  signerArgument === undefined
-) {
-  throw new Error(
-    "usage: pnpm smart-account-rotate <settings> add|remove <signer> [file]",
-  );
-}
-const settings = address(settingsArgument);
-const signer = address(signerArgument);
+const settings = addressArgument("smart-account-rotate", "settings");
 
-const { rpc, wallet } = await setup();
-const current = decodeSettings(await accountData(rpc, settings));
-// Throws unless the wallet alone meets the threshold and permissions.
-checkSyncConsensus(current, [wallet.address]);
-const isSigner = current.signers.some((entry) => entry.key === signer);
-if (action === "add" && isSigner) throw new Error(`${signer} is a signer`);
-if (action === "remove" && !isSigner) {
-  throw new Error(`${signer} is not a signer`);
-}
-if (signer === wallet.address) throw new Error("the wallet must stay a signer");
-const next =
-  action === "add"
-    ? [...current.signers, { key: signer, permissions: Permission.Vote }]
-    : current.signers.filter((entry) => entry.key !== signer);
-
-const vault = await vaultAddress(settings);
-const published = await fetchPublishedRecord(rpc, vault);
-if (published === undefined) {
-  throw new Error(`${settings} has no record; run pnpm smart-account-create`);
-}
-console.log(`current:  ${published.address}`);
-
-const bytes = await recordBytes(
-  `Squads record after ${action} ${signer}, ${new Date().toISOString()}`,
-  file,
+const session = await connect();
+const { client, rpc, wallet, alice, bob, carol, dave } = session;
+const current = await fetchSettings(client, settings);
+const { members } = membersAmong(
+  session,
+  current.signers.map((signer) => signer.key),
 );
-const prepared = await prepareRecordUpload({
-  owner: vault,
+const [leaving, joining] = members.includes(carol)
+  ? [carol, dave]
+  : [dave, carol];
+if (![alice, bob, leaving].every((member) => members.includes(member))) {
+  throw new Error(`${settings} is not an account of smart-account-create`);
+}
+console.log(`${leaving.name} leaves, ${joining.name} joins`);
+await ensureRegistered(session, joining);
+
+// 1. Build the next key record.
+const approvers = [alice, bob];
+const keep = [alice.signer.address, bob.signer.address];
+const added = { ...recipient(joining), permissions: Permission.All };
+const rotation = await rotateSmartAccount({
+  client,
+  settings,
+  rotator: alice,
   payer: wallet,
-  bytes,
+  approvers: approvers.map((approver) => approver.signer),
+  keep,
+  add: [added],
+  threshold: current.threshold,
 });
-console.log(`uploading ${bytes.length} bytes to ${prepared.address}`);
-await upload(rpc, wallet, prepared.transactions);
-await checkUploadedRecord(rpc, vault, prepared.address, bytes);
+const { record } = rotation;
 
-const publish = await executeTransactionSyncInstruction({
-  settings,
-  approvers: [wallet],
-  inner: await publishRecordInstructions({
-    owner: vault,
-    upload: prepared.address,
-    predecessor: published.address,
-    bytes,
-  }),
-});
-const membership = executeSettingsTransactionSyncInstruction({
-  settings,
-  rentPayer: wallet,
-  approvers: [wallet],
-  actions: rotationActions(current, next, current.threshold),
-});
-console.log(`rotated: ${await send(rpc, wallet, [publish, membership])}`);
+// 2. Upload.
+await sendUpload(session, rotation.upload);
 
-const record = await fetchPublishedRecord(rpc, vault);
-if (record === undefined) throw new Error("record was not published");
-console.log(`record:   ${record.address}`);
-console.log(`content:  ${new TextDecoder().decode(record.bytes)}`);
+// 3. Alice and Bob check the rotation.
+for (const approver of approvers) {
+  await checkRotation({
+    client,
+    settings,
+    record,
+    upload: rotation.upload.address,
+    member: approver,
+    approvers: approvers.map((each) => each.signer.address),
+    rentPayer: alice.signer.address,
+    keep,
+    add: [{ key: added.key, permissions: added.permissions }],
+    threshold: current.threshold,
+    proposed: rotation.instructions,
+  });
+  console.log(`${approver.name} checked the record and the instructions`);
+}
+
+// 4. Rotate.
+console.log(
+  `rotated: ${await send(rpc, wallet, rotation.instructions, { large: true })}`,
+);
+
+// 5. The members recover the new keys; the one that left does not.
+await assertMembersRecover({
+  members: [alice, bob, joining],
+  removed: [leaving],
+  expected: record,
+  recover: (member) => recoverVaultKeys({ client, settings, member }),
+});
+console.log(
+  `record:   ${rotation.upload.address} (key record ${record.epoch})`,
+);
 console.log("signers:");
-for (const entry of decodeSettings(await accountData(rpc, settings)).signers) {
-  console.log(`  ${entry.key} (permissions ${entry.permissions})`);
+for (const signer of (await fetchSettings(client, settings)).signers) {
+  console.log(`  ${signer.key} (permissions ${signer.permissions})`);
 }

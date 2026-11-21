@@ -23,16 +23,24 @@ A Squads smart account holds private balances in the zolana shielded pool (SPP).
    - Squads `executeTransactionSyncV2` with an inner registry `update_keys` setting the new `shared_viewing_pubkey` and the publication of the uploaded record;
    - Squads `executeSettingsTransactionSync` with the add-signer, change-threshold and remove-signer actions.
 
-### 3. Spend
+### 3. Recover
 
-1. **Recover.** The spender, a current signer, decrypts its entry in the current key record, then decrypts the nullifier secret and all old viewing secrets. Newly added signers receive the same full history as other current signers.
-2. **Sync.** The spender finds the vault's UTXOs by their view tag, which is the vault address, and tries the current and old viewing keys to decrypt them.
-3. **Build.** The spender picks the input UTXOs and builds the outputs:
-   - each recipient's output goes to the `owner_hash` and viewing public key in that recipient's `UserRecord`;
-   - change goes back to the vault, encrypted to the shared viewing public key.
-4. **Prove.** The spender generates the SPP `transact` proof, with the nullifier secret as a private input and the vault as the owner signer.
-5. **Approve.** A threshold of signers with vote permission co-signs the spend transaction. Together they must hold the initiate, vote and execute permissions.
-6. **Spend.** The spender submits Squads `executeTransactionSyncV2` with an inner SPP `transact`. Squads checks the approvals and signs `transact` as the vault.
+1. **Read.** A current signer reads the vault's storage pointer and the record it names. It accepts the record only if the pointer and the record are Record accounts controlled by the vault and the record's bytes match the pointer's hash.
+2. **Check.** The signer checks that the record belongs to its account, that its entry signers equal the account's signers, and that its `shared_viewing_pubkey` equals the vault's registered `viewing_pubkey`.
+3. **Decrypt.** The signer decrypts its entry to get the shared viewing secret, then uses that to decrypt the nullifier secret and every old viewing secret. It checks each secret against the public key in the record. Newly added signers recover the same history as the other current signers.
+
+### 4. Remove
+
+1. **Close.** A threshold of signers has the vault close its current record and its storage pointer with the Record program's `CloseAccount`. The rent of both goes to the vault.
+2. **After.** The vault has no published record. Its user registry entry stays, with the last shared viewing key and the nullifier key. Create cannot run again for this vault, because `register` fails for a registered vault.
+
+## Using the recovered keys
+
+The recovered keys let a signer view and spend the vault's private balance. The SDK stops at recovery; [`examples/helpers/spend.ts`](examples/helpers/spend.ts) shows the rest:
+
+1. **Sync.** The spender finds the vault's UTXOs by their view tag, which is the vault address, and tries the current and old viewing keys to decrypt them.
+2. **Build and prove.** The spender picks the input UTXOs and builds the outputs: each recipient's output goes to the `owner_hash` and viewing public key in that recipient's `UserRecord`, and change goes back to the vault, encrypted to the shared viewing public key. It generates the SPP `transact` proof with the nullifier secret as a private input and the vault as the owner signer.
+3. **Approve and send.** The wallet program signs `transact` as the vault. With Squads, a threshold of signers with vote permission co-signs `executeTransactionSyncV2`; together they must hold the initiate, vote and execute permissions.
 
 ## Key Record
 

@@ -1,56 +1,75 @@
 /**
- * Spends from a private Squads smart account. `setupPrivateSmartAccount`
- * creates the account with a fresh member as its only signer, registers its
- * vault and deposits 0.01 SOL into the vault's shielded balance. Then:
+ * Spends from a private Squads smart account with the shared keys.
  *
- * 1. Recover: the member opens its entry of the current key record and gets
- *    the vault's shared viewing key, nullifier secret and old viewing keys.
- * 2. Sync: the member finds and decrypts the vault's UTXOs with those keys.
- * 3. Spend: the member builds and proves an SPP `transact` that pays a
- *    shielded recipient; Squads checks the member's approval in
- *    `executeTransactionSyncV2` and signs it as the vault.
+ * 1. Recover: assert that every member recovers the shared keys from the
+ *    current key record. Bob keeps his copy to spend with.
+ * 2. Deposit 0.01 SOL into the vault's shielded address and sync the vault's
+ *    UTXOs with the recovered viewing keys.
+ * 3. Spend: Bob builds and proves an SPP `transact` that pays a shielded
+ *    recipient. Alice and Bob co-sign `executeTransactionSyncV2`, and Squads
+ *    signs the `transact` as the vault.
  *
- * Run: pnpm smart-account-spend
+ * Run: pnpm smart-account-spend <settings>
  */
 import { SOL_MINT } from "@heliuslabs/spr";
 import { ShieldedKeypair } from "@heliuslabs/spr/keypair";
 import { LocalShieldedKeys } from "@heliuslabs/spr/transaction";
+import { fetchSettings } from "../helpers/smart-account/account.js";
+import { vaultAddress } from "../helpers/smart-account/program.js";
+import { recoverVaultKeys } from "../helpers/smart-account/recover.js";
+import { spendInstruction } from "../helpers/smart-account/spend.js";
+import { vaultKeys } from "../helpers/spend.js";
 import {
-  recoverVaultKeys,
-  spendInstruction,
-  vaultKeys,
-} from "@heliuslabs/shared-key-storage";
-
-import {
+  addressArgument,
   DEPOSIT,
+  assertMembersRecover,
+  connect,
+  depositToVault,
+  membersAmong,
   send,
-  setupPrivateSmartAccount,
+  shieldedWallet,
   syncedBalance,
 } from "../common.js";
 
-const { client, rpc, wallet, member, settings, vault } =
-  await setupPrivateSmartAccount();
+const settings = addressArgument("smart-account-spend", "settings");
+
+const session = await connect({ prover: true });
+const { client, rpc, wallet, alice, bob } = session;
+const vault = await vaultAddress(settings);
 const recipient = ShieldedKeypair.generate();
 const amount = 3_000_000n;
 
 // 1. Recover.
-const recovered = await recoverVaultKeys({ client, settings, member });
+const recovered = await recoverVaultKeys({ client, settings, member: bob });
+const { members } = membersAmong(
+  session,
+  (await fetchSettings(client, settings)).signers.map((signer) => signer.key),
+);
+await assertMembersRecover({
+  members,
+  expected: recovered.record,
+  recover: (member) => recoverVaultKeys({ client, settings, member }),
+});
 const keys = vaultKeys(client, vault, recovered.secrets, recovered.viewingKeys);
 
-// 2. Sync.
+// 2. Deposit and sync.
+const before = (
+  await shieldedWallet(client, keys.address, keys.shielded)
+).balance(SOL_MINT).amount;
+await depositToVault(session, keys.address);
 const funded = await syncedBalance(
   client,
   keys.address,
   keys.shielded,
-  DEPOSIT,
+  before + DEPOSIT,
 );
-console.log(`vault balance: ${DEPOSIT} lamports`);
+console.log(`vault balance: ${before + DEPOSIT} lamports`);
 
-// 3. Spend.
+// 3. Spend, built by Bob and approved by Alice and Bob.
 const spend = await spendInstruction({
   client,
   settings,
-  approvers: [member.signer],
+  approvers: [alice.signer, bob.signer],
   secrets: recovered.secrets,
   viewingKeys: recovered.viewingKeys,
   inputs: funded.balance(SOL_MINT).utxos,
@@ -58,7 +77,7 @@ const spend = await spendInstruction({
     { recipient: recipient.shieldedAddress(), asset: SOL_MINT, amount },
   ],
 });
-console.log(`spend: ${await send(rpc, wallet, [spend], { large: true })}`);
+console.log(`spend:    ${await send(rpc, wallet, [spend], { large: true })}`);
 
 await syncedBalance(
   client,
@@ -66,5 +85,6 @@ await syncedBalance(
   LocalShieldedKeys.fromKeypair(recipient),
   amount,
 );
-await syncedBalance(client, keys.address, keys.shielded, DEPOSIT - amount);
-console.log(`recipient received ${amount}; vault keeps ${DEPOSIT - amount}`);
+const after = before + DEPOSIT - amount;
+await syncedBalance(client, keys.address, keys.shielded, after);
+console.log(`recipient received ${amount}; vault keeps ${after}`);

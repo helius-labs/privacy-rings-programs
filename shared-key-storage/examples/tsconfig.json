@@ -9,5 +9,11 @@
     "noUncheckedIndexedAccess": true,
     "types": ["node"]
   },
-  "include": ["*.ts", "smart-account/*.ts", "swig/*.ts"]
+  "include": [
+    "*.ts",
+    "smart-account/*.ts",
+    "swig/*.ts",
+    "helpers/**/*.ts",
+    "test/**/*.ts"
+  ]
 }

@@ -1,16 +1,34 @@
 # Shared Key Storage SDK
 
-`@heliuslabs/shared-key-storage` is a Node.js TypeScript SDK for uploading
-and reading encrypted key records, stored in SPL Record accounts, and for
-creating, registering, rotating and spending from private Squads smart
-accounts and Swig wallets.
+`@heliuslabs/shared-key-storage` is a Node.js TypeScript SDK for encrypted
+key records stored in SPL Record accounts. It covers four operations:
+
+| Operation | Functions                                                                   |
+| --------- | --------------------------------------------------------------------------- |
+| Create    | `createKeyRecord`, `prepareKeyRecordUpload`, `createKeyRecordInstructions`  |
+| Update    | `rotatedKeyRecord`, `prepareKeyRecordUpload`, `updateKeyRecordInstructions` |
+| Remove    | `removeRecordInstructions`                                                  |
+| Recover   | `fetchCurrentKeyRecord`, `recoverRecordKeys`                                |
+
+The vault that owns a record is usually a PDA of a wallet program. Create,
+update and remove return the instructions the vault signs; wrap them in the
+wallet program's own instruction. They depend only on their input, so an
+approver can build them again and compare them with what it is asked to sign
+(`checkProposedKeyRecord`, `checkEntryOpens`, `checkInstructionsMatch`).
+
+An update that changes who can read the key belongs in the same transaction
+as the wallet's signer change; the SDK does not build that part.
+
+The [examples](../examples/) wrap these instructions for Squads smart
+accounts and Swig wallets, and show how to spend from the vault with the
+recovered keys.
 
 Use Node.js 24+. Run `pnpm install` from `shared-key-storage/`, which installs
-the SDK and the [examples](../examples/) as one workspace, then `pnpm build`
-from this directory. Run `pnpm pack` to build a tarball for local
-installation in another project; it needs `@heliuslabs/spr` and
-`@solana/kit` installed next to it, as peer dependencies, so the project and
-the SDK share one copy of each.
+the SDK and the examples as one workspace, then `pnpm build` from this
+directory. Run `pnpm pack` to build a tarball for local installation in
+another project; it needs `@heliuslabs/spr` and `@solana/kit` installed next
+to it, as peer dependencies, so the project and the SDK share one copy of
+each.
 
 ```ts
 import { storagePointerAddress } from "@heliuslabs/shared-key-storage";
@@ -24,25 +42,16 @@ export async function findVaultStoragePointer(vault: Address) {
 ## Tests
 
 ```bash
-pnpm test                    # unit tests and LiteSVM storage and Swig tests
-export SOLANA_DEVNET_RPC_URL='https://devnet.helius-rpc.com/?api-key=YOUR_KEY'
-export SOLANA_MAINNET_RPC_URL='https://mainnet.helius-rpc.com/?api-key=YOUR_KEY'
-pnpm test:devnet             # create, register, spend and rotate on devnet
-pnpm test:mainnet            # the same flows on mainnet
+pnpm test    # unit tests and LiteSVM storage tests
 ```
 
-The network tests run the flows for both a Squads smart account and a Swig
-wallet.
-
-The network tests need only the selected network's RPC URL. They check the
-cluster's genesis hash and deployed programs before funding accounts. The
-payer defaults to `~/.config/solana/id.json` (override with
-`ZOLANA_PAYER_KEYPAIR`) and needs at least 0.1 SOL.
-
-The storage and Swig tests run in LiteSVM against the SPL Record and Swig
-binaries dumped from mainnet. To refresh them:
+The storage tests run in LiteSVM against the SPL Record binary dumped from
+mainnet. To refresh it:
 
 ```bash
 solana program dump recr1L3PCGKLbckBqMNcJhuuyU1zgo8nBhfLVsJNwr5 test/fixtures/spl_record.so -u mainnet-beta
-solana program dump swigypWHEksbC64pWKwah1WTeh9JXwx8H1rJHLdbQMB test/fixtures/swig.so -u mainnet-beta
 ```
+
+The tests that send whole transactions on devnet or mainnet need a wallet
+program to sign for the vault, so they live with the
+[examples](../examples/#tests).

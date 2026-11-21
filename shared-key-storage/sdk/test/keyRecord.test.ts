@@ -19,10 +19,10 @@ import {
   recoverOldViewingKeys,
   type KeyRecord,
 } from "../src/keyRecord.js";
-import { checkOwnEntry } from "../src/smart-account/account.js";
 import { currentKeyRecord, type VaultRegistry } from "../src/core/account.js";
+import { checkProposedKeyRecord } from "../src/core/approve.js";
 import { memberFromKeypair } from "../src/core/member.js";
-import { vaultAddress } from "../src/smart-account/program.js";
+import { checkEntryOpens } from "../src/core/recover.js";
 import {
   accountClient,
   publish,
@@ -44,10 +44,19 @@ async function settingsAddress(): Promise<Address> {
   return (await generateKeyPairSigner()).address;
 }
 
+const vaults = new Map<Address, Address>();
+
+/** The vault of the wallet account `settings`: one generated address each. */
+async function vaultAddress(settings: Address): Promise<Address> {
+  const vault = vaults.get(settings) ?? (await settingsAddress());
+  vaults.set(settings, vault);
+  return vault;
+}
+
 /**
- * An approver's `checkOwnEntry` of `record`, uploaded and frozen under the
- * vault of `settings`, against a chain whose storage pointer names
- * `published` for that vault, or no pointer at all.
+ * An approver's checks of `record`, uploaded and frozen under the vault of
+ * `settings`, against a chain whose storage pointer names `published` for
+ * that vault, or no pointer at all: the proposed record, then its own entry.
  */
 async function approve(
   record: KeyRecord,
@@ -70,13 +79,14 @@ async function approve(
     record: uploaded,
     bytes: encodeKeyRecord(record),
   });
-  await checkOwnEntry({
+  await checkProposedKeyRecord({
     client: accountClient(accounts),
-    settings,
+    accountId: settings,
+    vault: await vaultAddress(settings),
     record,
     upload: uploaded,
-    member: memberFromKeypair(approver.keypair),
   });
+  checkEntryOpens(record, memberFromKeypair(approver.keypair));
 }
 
 function recordFor(settings: Address, members: readonly Member[], epoch = 0n) {
