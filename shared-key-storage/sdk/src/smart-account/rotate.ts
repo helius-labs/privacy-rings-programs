@@ -12,7 +12,10 @@ import {
   encodeKeyRecord,
   type KeyRecord,
 } from "../keyRecord.js";
-import { registeredViewingKey, updateKeysInstruction } from "../registry.js";
+import {
+  updateKeysInstruction,
+  withRegisteredViewingKeys,
+} from "../registry.js";
 import {
   publishRecordInstructions,
   type RecordUpload,
@@ -159,20 +162,17 @@ export async function rotateSmartAccount(
     input.settings,
     current,
   );
-  const kept = await Promise.all(
-    input.keep.map(async (key): Promise<NewSigner> => {
+  const kept = await withRegisteredViewingKeys(
+    input.client,
+    input.keep.map((key) => {
       const signer = current.signers.find((entry) => entry.key === key);
       if (signer === undefined) {
         throw new Error(`${key} is not a current signer`);
       }
-      return {
-        key,
-        permissions: signer.permissions,
-        viewingPublicKey: await registeredViewingKey(input.client, key),
-      };
+      return { key, permissions: signer.permissions };
     }),
   );
-  const next = [...kept, ...input.add];
+  const next: NewSigner[] = [...kept, ...input.add];
   const record = rotatedKeyRecord({
     accountId: input.settings,
     record: published.record,

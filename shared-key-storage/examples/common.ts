@@ -113,32 +113,23 @@ export async function send(
   { large = false }: Readonly<{ large?: boolean }> = {},
 ): Promise<Signature> {
   const { value: lifetime } = await rpc.getLatestBlockhash().send();
+  const empty = large
+    ? setTransactionMessageConfig(
+        {
+          computeUnitLimit: 1_400_000,
+          loadedAccountsDataSizeLimit: 64 * 1024 * 1024,
+        },
+        createTransactionMessage({ version: 1 }),
+      )
+    : createTransactionMessage({ version: 0 });
   const signed = await signTransactionMessageWithSigners(
-    large
-      ? pipe(
-          createTransactionMessage({ version: 1 }),
-          (message) => setTransactionMessageFeePayerSigner(feePayer, message),
-          (message) =>
-            setTransactionMessageLifetimeUsingBlockhash(lifetime, message),
-          (message) =>
-            setTransactionMessageConfig(
-              {
-                computeUnitLimit: 1_400_000,
-                loadedAccountsDataSizeLimit: 64 * 1024 * 1024,
-              },
-              message,
-            ),
-          (message) =>
-            appendTransactionMessageInstructions(instructions, message),
-        )
-      : pipe(
-          createTransactionMessage({ version: 0 }),
-          (message) => setTransactionMessageFeePayerSigner(feePayer, message),
-          (message) =>
-            setTransactionMessageLifetimeUsingBlockhash(lifetime, message),
-          (message) =>
-            appendTransactionMessageInstructions(instructions, message),
-        ),
+    pipe(
+      empty,
+      (message) => setTransactionMessageFeePayerSigner(feePayer, message),
+      (message) =>
+        setTransactionMessageLifetimeUsingBlockhash(lifetime, message),
+      (message) => appendTransactionMessageInstructions(instructions, message),
+    ),
   );
   assertIsTransactionWithBlockhashLifetime(signed);
   await sendTransactionWithoutConfirmingFactory({ rpc })(signed, {

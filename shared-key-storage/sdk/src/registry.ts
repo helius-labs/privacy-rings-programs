@@ -40,6 +40,19 @@ export async function registeredViewingKey(
   return X25519PublicKey.fromBytes(viewingPublicKey);
 }
 
+/** `entries`, each with its key's registered viewing key added. */
+export function withRegisteredViewingKeys<T extends { readonly key: Address }>(
+  client: SprClient,
+  entries: readonly T[],
+): Promise<(T & { readonly viewingPublicKey: X25519PublicKey })[]> {
+  return Promise.all(
+    entries.map(async (entry) => ({
+      ...entry,
+      viewingPublicKey: await registeredViewingKey(client, entry.key),
+    })),
+  );
+}
+
 /**
  * Registry `register` of the vault with the record's public keys. The vault
  * owns and pays for the registry record. It fails on chain once the vault is

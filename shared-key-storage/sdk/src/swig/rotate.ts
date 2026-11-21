@@ -7,7 +7,10 @@ import {
   type KeyRecipient,
   type KeyRecord,
 } from "../keyRecord.js";
-import { registeredViewingKey, updateKeysInstruction } from "../registry.js";
+import {
+  updateKeysInstruction,
+  withRegisteredViewingKeys,
+} from "../registry.js";
 import {
   publishRecordInstructions,
   type RecordUpload,
@@ -85,29 +88,16 @@ export async function rotateSwigAccount(
     input.swig,
     current,
   );
-  const kept = await Promise.all(
-    input.keep.map(
-      async (key): Promise<KeyRecipient> => ({
-        key,
-        viewingPublicKey: await registeredViewingKey(input.client, key),
-      }),
-    ),
+  // The authority first, then the kept members, all with registered keys.
+  const registered = await withRegisteredViewingKeys(
+    input.client,
+    [authority.address, ...input.keep].map((key) => ({ key })),
   );
   const record = rotatedKeyRecord({
     accountId: input.swig,
     record: published.record,
     rotator: input.authority,
-    recipients: [
-      {
-        key: authority.address,
-        viewingPublicKey: await registeredViewingKey(
-          input.client,
-          authority.address,
-        ),
-      },
-      ...kept,
-      ...input.add,
-    ],
+    recipients: [...registered, ...input.add],
   });
   const vault = await swigVaultAddress(input.swig);
   const upload = await prepareKeyRecordUpload({

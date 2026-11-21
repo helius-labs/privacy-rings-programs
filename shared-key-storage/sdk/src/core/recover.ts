@@ -4,7 +4,11 @@ import {
   recoverSharedSecrets,
   type KeyRecord,
 } from "../keyRecord.js";
-import { destroySecrets, type Member, type VaultSecrets } from "./member.js";
+import {
+  destroyVaultSecrets,
+  type Member,
+  type VaultSecrets,
+} from "./member.js";
 
 /**
  * Recovers `member`'s shared secrets from `record`, and the viewing keys of
@@ -28,8 +32,7 @@ export function recoverRecordKeys(
       ...recoverOldViewingKeys(record, secrets.viewingKey).reverse(),
     );
   } catch (error) {
-    destroySecrets(secrets);
-    viewingKeys.forEach((key) => key.destroy());
+    destroyVaultSecrets({ secrets, viewingKeys });
     throw error;
   }
   return { record, secrets, viewingKeys };
@@ -40,7 +43,5 @@ export function recoverRecordKeys(
  * including every old viewing key.
  */
 export function checkEntryOpens(record: KeyRecord, member: Member): void {
-  const { secrets, viewingKeys } = recoverRecordKeys(record, member);
-  destroySecrets(secrets);
-  viewingKeys.forEach((key) => key.destroy());
+  destroyVaultSecrets(recoverRecordKeys(record, member));
 }

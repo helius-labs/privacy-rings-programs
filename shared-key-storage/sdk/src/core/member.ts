@@ -25,3 +25,11 @@ export function destroySecrets(secrets: SharedSecrets): void {
   secrets.viewingKey.destroy();
   secrets.nullifierKey.destroy();
 }
+
+/** Destroys the shared secrets and every viewing key of `vault`. */
+export function destroyVaultSecrets(
+  vault: Pick<VaultSecrets, "secrets" | "viewingKeys">,
+): void {
+  destroySecrets(vault.secrets);
+  vault.viewingKeys.forEach((key) => key.destroy());
+}
