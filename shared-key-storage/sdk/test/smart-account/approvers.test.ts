@@ -30,10 +30,12 @@ import {
 import { updateKeysInstruction } from "../../src/registry.js";
 import {
   checkRegistration,
-  checkRotation,
   registerVaultInstruction,
+} from "../../src/smart-account/register.js";
+import {
+  checkRotation,
   rotateSmartAccountInstructions,
-} from "../../src/smart-account/flows.js";
+} from "../../src/smart-account/rotate.js";
 import {
   checkInstructionsMatch,
   memberFromKeypair,

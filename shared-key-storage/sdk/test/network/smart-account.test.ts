@@ -15,15 +15,19 @@ import { LocalShieldedKeys } from "@heliuslabs/spr/transaction";
 import { recoverSharedSecrets } from "../../src/keyRecord.js";
 import { prepareKeyRecordUpload } from "../../src/registry.js";
 import {
-  checkRegistration,
-  checkRotation,
-  createSmartAccount,
   fetchSettings,
   recoverVaultKeys,
+} from "../../src/smart-account/account.js";
+import { createSmartAccount } from "../../src/smart-account/create.js";
+import {
+  checkRegistration,
   registerVaultInstruction,
+} from "../../src/smart-account/register.js";
+import {
+  checkRotation,
   rotateSmartAccount,
-  spendInstruction,
-} from "../../src/smart-account/flows.js";
+} from "../../src/smart-account/rotate.js";
+import { spendInstruction } from "../../src/smart-account/spend.js";
 import { vaultKeys, type Member } from "../../src/vault.js";
 import {
   Permission,
@@ -35,7 +39,7 @@ import {
   registeredMembers,
   uploadRecord,
   vaultRegistry,
-} from "./flows.js";
+} from "./steps.js";
 import { networkSetup, send, syncedSolBalance, transferSol } from "./send.js";
 
 /** Alice creates a 2-of-2 account for Alice and Bob and funds its vault. */

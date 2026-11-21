@@ -25,16 +25,15 @@ import {
 } from "../../src/swig/program.js";
 import {
   VIEW_KEY_AUTHORITY_ROLE,
-  createSwigAccount,
   fetchSwig,
   memberActions,
   recoverSwigVaultKeys,
-  registerSwigVaultInstruction,
-  rotateSwigAccount,
-  swigSpendInstruction,
-  type CreatedSwig,
   type SolBudget,
-} from "../../src/swig/flows.js";
+} from "../../src/swig/account.js";
+import { createSwigAccount, type CreatedSwig } from "../../src/swig/create.js";
+import { registerSwigVaultInstruction } from "../../src/swig/register.js";
+import { rotateSwigAccount } from "../../src/swig/rotate.js";
+import { swigSpendInstruction } from "../../src/swig/spend.js";
 import { vaultKeys, type Member } from "../../src/vault.js";
 import {
   depositToVault,
@@ -42,7 +41,7 @@ import {
   registeredMembers,
   uploadRecord,
   vaultRegistry,
-} from "./flows.js";
+} from "./steps.js";
 import { networkSetup, send, syncedSolBalance, transferSol } from "./send.js";
 
 /** About a day of slots. */
