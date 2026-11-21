@@ -15,7 +15,8 @@ import {
 import { registerVaultKeysInstruction } from "../registry.js";
 import { publishRecordInstructions } from "../record/storage.js";
 import { executeTransactionSyncInstruction, vaultAddress } from "./program.js";
-import { checkInstructionsMatch, type Member } from "../vault.js";
+import { checkInstructionsMatch } from "../core/approve.js";
+import { type Member } from "../core/member.js";
 import { checkApprovers, checkOwnEntry } from "./account.js";
 
 /**

@@ -1,123 +1,43 @@
 /**
- * Key records uploaded in chunks and published by the vault.
- * Publication and user-registry changes run in the same wallet transaction.
- * Replaced records are closed and their rent goes to the vault; the latest
- * record contains all old viewing keys.
+ * The SPP user registry: a vault registers its shared viewing and nullifier
+ * public keys there, and a rotation replaces the viewing key. Signers'
+ * viewing keys are read from it too.
  */
-import {
-  AccountRole,
-  type Address,
-  type Instruction,
-  type TransactionSigner,
-} from "@solana/kit";
+import { AccountRole, type Address, type Instruction } from "@solana/kit";
 import type { SprClient } from "@heliuslabs/spr/client";
 import { getUserRecordAddress } from "@heliuslabs/spr/addresses";
 import { getRegisterInstructionAsync } from "@heliuslabs/spr/instructions";
 import { USER_REGISTRY_PROGRAM_ID } from "@heliuslabs/spr/interface";
-import type { Bytes33 } from "@heliuslabs/spr/keypair";
+import { X25519PublicKey, type Bytes33 } from "@heliuslabs/spr/keypair";
 import { fetchUserRecord } from "@heliuslabs/spr/wallet";
 import { ByteWriter } from "./bytes.js";
-import {
-  decodeKeyRecord,
-  encodeKeyRecord,
-  isCurrentKeyRecord,
-  type KeyRecord,
-} from "./keyRecord.js";
-import {
-  fetchPublishedRecord,
-  prepareRecordUpload,
-  type RecordUpload,
-} from "./record/storage.js";
+import type { KeyRecord } from "./keyRecord.js";
 
 const UPDATE_KEYS = 2;
 
-/** The vault's published key record, which the next publication replaces and closes. */
-export interface KeyRecordPublication {
-  /** The Record account holding the key record. */
-  readonly address: Address;
-  readonly record: KeyRecord;
-}
-
-/** What the registries say about the vault's keys. */
-export interface VaultRegistry {
-  /** The registered shared viewing public key. */
-  readonly viewingPublicKey: Bytes33;
-  /** The published key record, if any. */
-  readonly current: KeyRecordPublication | undefined;
-}
-
-/** The vault's published key record read through its storage pointer, if any. */
-export async function fetchPublishedKeyRecord(
+/** The viewing public key `owner` registered, if it is registered. */
+export async function fetchRegisteredViewingKey(
   client: SprClient,
-  vault: Address,
-): Promise<KeyRecordPublication | undefined> {
-  const published = await fetchPublishedRecord(client.solanaRpc, vault);
-  if (published === undefined) return undefined;
-  return {
-    address: published.address,
-    record: decodeKeyRecord(published.bytes),
-  };
-}
-
-/** The registered viewing key and current published record, if registered. */
-export async function fetchVaultRegistry(
-  client: SprClient,
-  vault: Address,
-): Promise<VaultRegistry | undefined> {
-  const userRecord = await fetchUserRecord({ rpc: client, owner: vault });
-  if (userRecord === undefined) return undefined;
-  return {
-    viewingPublicKey: userRecord.viewingPublicKey,
-    current: await fetchPublishedKeyRecord(client, vault),
-  };
+  owner: Address,
+): Promise<Bytes33 | undefined> {
+  const userRecord = await fetchUserRecord({ rpc: client, owner });
+  return userRecord?.viewingPublicKey;
 }
 
 /**
- * The current key record: the one the vault's storage pointer names. It
- * must belong to `settings`, name exactly the wallet's signers, and hold the
- * registered viewing key; a wallet transaction that changed the signers
- * outside the rotate flow breaks the last two.
+ * A kept signer's viewing public key, read from its user registry record.
+ * Taking it from anywhere the rotator controls would let the rotator choose
+ * whom the new shared viewing key is encrypted to.
  */
-export function currentKeyRecord(
-  registry: VaultRegistry,
-  settings: Address,
-  signers: readonly Address[],
-): KeyRecordPublication {
-  const { current } = registry;
-  if (current === undefined) {
-    throw new Error(`the vault of ${settings} has no key record`);
+export async function registeredViewingKey(
+  client: SprClient,
+  signer: Address,
+): Promise<X25519PublicKey> {
+  const viewingPublicKey = await fetchRegisteredViewingKey(client, signer);
+  if (viewingPublicKey === undefined) {
+    throw new Error(`kept signer ${signer} is not in the user registry`);
   }
-  if (
-    !isCurrentKeyRecord(current.record, {
-      settings,
-      signers,
-      registeredViewingPublicKey: registry.viewingPublicKey,
-    })
-  ) {
-    throw new Error(
-      `the key record of ${settings} does not match its signers and registered key`,
-    );
-  }
-  return current;
-}
-
-/**
- * Prepare upload transactions; send each before submitting register or
- * rotate. `payer` funds the upload and gets the rent back only by sending
- * `closeInstruction` before the upload's last transaction; when a later
- * rotation closes the record, its rent goes to the vault.
- */
-export function prepareKeyRecordUpload(
-  input: Readonly<{
-    owner: Address;
-    payer: TransactionSigner;
-    record: KeyRecord;
-  }>,
-): Promise<RecordUpload> {
-  return prepareRecordUpload({
-    ...input,
-    bytes: encodeKeyRecord(input.record),
-  });
+  return X25519PublicKey.fromBytes(viewingPublicKey);
 }
 
 /**

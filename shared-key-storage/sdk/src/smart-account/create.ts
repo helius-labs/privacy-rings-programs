@@ -16,7 +16,8 @@ import {
   settingsAddress,
   vaultAddress,
 } from "./program.js";
-import { accountData, destroySecrets } from "../vault.js";
+import { accountData } from "../core/account.js";
+import { destroySecrets } from "../core/member.js";
 import { sortedSigners, type NewSigner } from "./account.js";
 
 export interface CreatedAccount {

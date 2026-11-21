@@ -13,7 +13,7 @@ import {
   type KeyRecipient,
   type KeyRecord,
 } from "../keyRecord.js";
-import type { KeyRecordPublication } from "../registry.js";
+import type { KeyRecordPublication } from "../record/keyRecordStorage.js";
 import {
   checkSyncConsensus,
   decodeSettings,
@@ -23,13 +23,11 @@ import {
 } from "./program.js";
 import {
   accountData,
-  checkEntryOpens,
-  checkProposedKeyRecord as checkProposedVaultRecord,
   fetchCurrentKeyRecord as fetchCurrentVaultRecord,
-  recoverRecordKeys,
-  type Member,
-  type VaultSecrets,
-} from "../vault.js";
+} from "../core/account.js";
+import { type Member } from "../core/member.js";
+import { checkEntryOpens } from "../core/recover.js";
+import { checkProposedKeyRecord as checkProposedVaultRecord } from "../core/approve.js";
 
 /** A signer to add: its Squads permissions and its viewing public key. */
 export interface NewSigner extends SmartAccountSigner, KeyRecipient {}
@@ -59,25 +57,6 @@ export async function fetchCurrentKeyRecord(
     await vaultAddress(settings),
     decoded.signers.map((signer) => signer.key),
   );
-}
-
-/**
- * Recovers the shared secrets of the current key record, and the viewing
- * keys of every previous epoch, current first; see `recoverRecordKeys`.
- */
-export async function recoverVaultKeys(
-  input: Readonly<{
-    client: SprClient;
-    settings: Address;
-    member: Member;
-  }>,
-): Promise<VaultSecrets> {
-  const { record } = await fetchCurrentKeyRecord(
-    input.client,
-    input.settings,
-    await fetchSettings(input.client, input.settings),
-  );
-  return recoverRecordKeys(record, input.member);
 }
 
 export async function checkProposedKeyRecord(

@@ -14,7 +14,7 @@ import {
   createSwigInstruction,
   swigAddress,
 } from "./program.js";
-import { destroySecrets } from "../vault.js";
+import { destroySecrets } from "../core/member.js";
 import {
   VIEW_KEY_AUTHORITY_ROLE,
   memberActions,

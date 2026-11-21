@@ -19,9 +19,9 @@ import {
   recoverOldViewingKeys,
   type KeyRecord,
 } from "../src/keyRecord.js";
-import { currentKeyRecord, type VaultRegistry } from "../src/registry.js";
 import { checkOwnEntry } from "../src/smart-account/account.js";
-import { memberFromKeypair } from "../src/vault.js";
+import { currentKeyRecord, type VaultRegistry } from "../src/core/account.js";
+import { memberFromKeypair } from "../src/core/member.js";
 import { vaultAddress } from "../src/smart-account/program.js";
 import {
   accountClient,

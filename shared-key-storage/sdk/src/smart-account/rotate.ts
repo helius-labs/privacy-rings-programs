@@ -12,11 +12,12 @@ import {
   encodeKeyRecord,
   type KeyRecord,
 } from "../keyRecord.js";
-import { prepareKeyRecordUpload, updateKeysInstruction } from "../registry.js";
+import { registeredViewingKey, updateKeysInstruction } from "../registry.js";
 import {
   publishRecordInstructions,
   type RecordUpload,
 } from "../record/storage.js";
+import { prepareKeyRecordUpload } from "../record/keyRecordStorage.js";
 import {
   checkSyncConsensus,
   executeSettingsTransactionSyncInstruction,
@@ -26,13 +27,10 @@ import {
   type Settings,
   type SmartAccountSigner,
 } from "./program.js";
-import {
-  checkEntryOpens,
-  checkInstructionsMatch,
-  registeredViewingKey,
-  rotatedKeyRecord,
-  type Member,
-} from "../vault.js";
+import { checkEntryOpens } from "../core/recover.js";
+import { checkInstructionsMatch } from "../core/approve.js";
+import { rotatedKeyRecord } from "../core/rotate.js";
+import { type Member } from "../core/member.js";
 import {
   checkApprovers,
   checkProposedKeyRecord,

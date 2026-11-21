@@ -22,8 +22,8 @@ import {
 import type { SprClient } from "@heliuslabs/spr/client";
 
 import { SYSTEM_PROGRAM_ADDRESS } from "../cpi.js";
-import type { KeyRecordPublication } from "../registry.js";
 import { RECORD_PROGRAM_ADDRESS } from "../record/program.js";
+import type { KeyRecordPublication } from "../record/keyRecordStorage.js";
 import {
   decodeSwig,
   swigRoleOf,
@@ -31,13 +31,7 @@ import {
   type SwigAccount,
   type SwigAction,
 } from "./program.js";
-import {
-  accountData,
-  fetchCurrentKeyRecord,
-  recoverRecordKeys,
-  type Member,
-  type VaultSecrets,
-} from "../vault.js";
+import { accountData, fetchCurrentKeyRecord } from "../core/account.js";
 
 /** The view key authority's role. */
 export const VIEW_KEY_AUTHORITY_ROLE = 0;
@@ -127,19 +121,4 @@ export async function fetchCurrentSwigRecord(
     await swigVaultAddress(swig),
     swigMembers(decoded),
   );
-}
-
-/**
- * Recovers `member`'s shared secrets of the current key record and every old
- * viewing key, current first; see `recoverRecordKeys`.
- */
-export async function recoverSwigVaultKeys(
-  input: Readonly<{ client: SprClient; swig: Address; member: Member }>,
-): Promise<VaultSecrets> {
-  const { record } = await fetchCurrentSwigRecord(
-    input.client,
-    input.swig,
-    await fetchSwig(input.client, input.swig),
-  );
-  return recoverRecordKeys(record, input.member);
 }

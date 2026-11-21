@@ -13,13 +13,17 @@ import { DepositAsset, depositInstruction } from "@heliuslabs/spr/interface";
 import { getRegisterInstructionAsync } from "@heliuslabs/spr/instructions";
 
 import type { KeyRecord } from "../../src/keyRecord.js";
-import { fetchVaultRegistry, type VaultRegistry } from "../../src/registry.js";
 import {
   fetchStoragePointer,
   type RecordUpload,
 } from "../../src/record/storage.js";
 import { decodeRecordAccount } from "../../src/record/program.js";
-import { memberFromKeypair, vaultKeys, type Member } from "../../src/vault.js";
+import {
+  fetchVaultRegistry,
+  type VaultRegistry,
+} from "../../src/core/account.js";
+import { memberFromKeypair, type Member } from "../../src/core/member.js";
+import { vaultKeys } from "../../src/core/spend.js";
 import { send, transferSol } from "./send.js";
 
 /**

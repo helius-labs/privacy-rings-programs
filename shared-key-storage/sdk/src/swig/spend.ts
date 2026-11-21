@@ -6,7 +6,7 @@ import type { Utxo } from "@heliuslabs/spr/transaction";
 
 import type { SharedSecrets } from "../keyRecord.js";
 import { signV2Instruction } from "./program.js";
-import { vaultTransactInstruction, type Payment } from "../vault.js";
+import { vaultTransactInstruction, type Payment } from "../core/spend.js";
 import { fetchSwig, roleId, swigVaultAddress } from "./account.js";
 
 /**

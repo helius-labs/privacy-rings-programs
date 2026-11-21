@@ -14,11 +14,9 @@ import { ShieldedKeypair, initializePoseidon } from "@heliuslabs/spr/keypair";
 import { LocalShieldedKeys } from "@heliuslabs/spr/transaction";
 
 import { encodeKeyRecord, recoverSharedSecrets } from "../../src/keyRecord.js";
-import {
-  prepareKeyRecordUpload,
-  registerVaultKeysInstruction,
-} from "../../src/registry.js";
+import { registerVaultKeysInstruction } from "../../src/registry.js";
 import { publishRecordInstructions } from "../../src/record/storage.js";
+import { prepareKeyRecordUpload } from "../../src/record/keyRecordStorage.js";
 import {
   addAuthorityInstruction,
   signV2Instruction,
@@ -27,14 +25,15 @@ import {
   VIEW_KEY_AUTHORITY_ROLE,
   fetchSwig,
   memberActions,
-  recoverSwigVaultKeys,
   type SolBudget,
 } from "../../src/swig/account.js";
 import { createSwigAccount, type CreatedSwig } from "../../src/swig/create.js";
+import { recoverSwigVaultKeys } from "../../src/swig/recover.js";
 import { registerSwigVaultInstruction } from "../../src/swig/register.js";
 import { rotateSwigAccount } from "../../src/swig/rotate.js";
 import { swigSpendInstruction } from "../../src/swig/spend.js";
-import { vaultKeys, type Member } from "../../src/vault.js";
+import { vaultKeys } from "../../src/core/spend.js";
+import { type Member } from "../../src/core/member.js";
 import {
   depositToVault,
   publishedRegistry,

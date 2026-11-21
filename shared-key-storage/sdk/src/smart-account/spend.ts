@@ -6,7 +6,7 @@ import type { Utxo } from "@heliuslabs/spr/transaction";
 
 import type { SharedSecrets } from "../keyRecord.js";
 import { executeTransactionSyncInstruction, vaultAddress } from "./program.js";
-import { vaultTransactInstruction, type Payment } from "../vault.js";
+import { vaultTransactInstruction, type Payment } from "../core/spend.js";
 import { checkApprovers } from "./account.js";
 
 /**

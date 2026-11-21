@@ -13,12 +13,10 @@ import { ShieldedKeypair, initializePoseidon } from "@heliuslabs/spr/keypair";
 import { LocalShieldedKeys } from "@heliuslabs/spr/transaction";
 
 import { recoverSharedSecrets } from "../../src/keyRecord.js";
-import { prepareKeyRecordUpload } from "../../src/registry.js";
-import {
-  fetchSettings,
-  recoverVaultKeys,
-} from "../../src/smart-account/account.js";
+import { prepareKeyRecordUpload } from "../../src/record/keyRecordStorage.js";
+import { fetchSettings } from "../../src/smart-account/account.js";
 import { createSmartAccount } from "../../src/smart-account/create.js";
+import { recoverVaultKeys } from "../../src/smart-account/recover.js";
 import {
   checkRegistration,
   registerVaultInstruction,
@@ -28,7 +26,8 @@ import {
   rotateSmartAccount,
 } from "../../src/smart-account/rotate.js";
 import { spendInstruction } from "../../src/smart-account/spend.js";
-import { vaultKeys, type Member } from "../../src/vault.js";
+import { vaultKeys } from "../../src/core/spend.js";
+import { type Member } from "../../src/core/member.js";
 import {
   Permission,
   executeTransactionSyncInstruction,

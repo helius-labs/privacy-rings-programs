@@ -36,11 +36,8 @@ import {
   checkRotation,
   rotateSmartAccountInstructions,
 } from "../../src/smart-account/rotate.js";
-import {
-  checkInstructionsMatch,
-  memberFromKeypair,
-  type Member,
-} from "../../src/vault.js";
+import { checkInstructionsMatch } from "../../src/core/approve.js";
+import { memberFromKeypair, type Member } from "../../src/core/member.js";
 import {
   Permission,
   SMART_ACCOUNT_PROGRAM_ADDRESS,

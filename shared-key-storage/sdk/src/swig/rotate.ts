@@ -7,22 +7,20 @@ import {
   type KeyRecipient,
   type KeyRecord,
 } from "../keyRecord.js";
-import { prepareKeyRecordUpload, updateKeysInstruction } from "../registry.js";
+import { registeredViewingKey, updateKeysInstruction } from "../registry.js";
 import {
   publishRecordInstructions,
   type RecordUpload,
 } from "../record/storage.js";
+import { prepareKeyRecordUpload } from "../record/keyRecordStorage.js";
 import {
   addAuthorityInstruction,
   removeAuthorityInstruction,
   signV2Instruction,
   swigRoleOf,
 } from "./program.js";
-import {
-  registeredViewingKey,
-  rotatedKeyRecord,
-  type Member,
-} from "../vault.js";
+import { rotatedKeyRecord } from "../core/rotate.js";
+import { type Member } from "../core/member.js";
 import {
   VIEW_KEY_AUTHORITY_ROLE,
   checkViewKeyAuthority,
