@@ -5,7 +5,10 @@ import type { SprClient } from "@heliuslabs/spr/client";
 import type { Utxo } from "@heliuslabs/spr/transaction";
 
 import { type SharedSecrets } from "@heliuslabs/shared-key-storage";
-import { executeTransactionSyncInstruction, vaultAddress } from "./program.js";
+import {
+  executeTransactionSyncV2Instruction,
+  smartAccountAddress,
+} from "./program.js";
 import { vaultTransactInstruction, type Payment } from "../spend.js";
 import { checkApprovers } from "./account.js";
 
@@ -14,7 +17,7 @@ import { checkApprovers } from "./account.js";
  * `vaultTransactInstruction`) and wraps it in Squads
  * `executeTransactionSyncV2`. The vault needs SOL for the fees.
  */
-export async function spendInstruction(
+export async function smartAccountSpendInstruction(
   input: Readonly<{
     client: SprClient;
     settings: Address;
@@ -28,9 +31,9 @@ export async function spendInstruction(
   await checkApprovers(input.client, input.settings, input.approvers);
   const transact = await vaultTransactInstruction({
     ...input,
-    vault: await vaultAddress(input.settings),
+    vault: await smartAccountAddress(input.settings),
   });
-  return executeTransactionSyncInstruction({
+  return executeTransactionSyncV2Instruction({
     settings: input.settings,
     approvers: input.approvers,
     inner: [transact],

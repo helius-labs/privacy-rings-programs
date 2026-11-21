@@ -13,7 +13,7 @@ import { fetchCurrentKeyRecord, fetchSettings } from "./account.js";
  * Recovers the shared secrets of the current key record, and the viewing
  * keys of every previous epoch, current first; see `recoverRecordKeys`.
  */
-export async function recoverVaultKeys(
+export async function recoverSmartAccountVaultKeys(
   input: Readonly<{
     client: SprClient;
     settings: Address;

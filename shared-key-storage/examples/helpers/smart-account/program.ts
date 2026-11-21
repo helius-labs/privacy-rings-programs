@@ -77,16 +77,20 @@ const addressEncoder = getAddressEncoder();
 const addressDecoder = getAddressDecoder();
 
 /** Squads permission bits. */
-export const Permission = Object.freeze({
+export const SmartAccountPermission = Object.freeze({
   Initiate: 1,
   Vote: 2,
   Execute: 4,
-  All: 7,
 });
+/** Every Squads permission: initiate, vote and execute. */
+export const ALL_PERMISSIONS =
+  SmartAccountPermission.Initiate |
+  SmartAccountPermission.Vote |
+  SmartAccountPermission.Execute;
 
 export interface SmartAccountSigner {
   readonly key: Address;
-  /** Bitmask of `Permission`. */
+  /** Bitmask of `SmartAccountPermission`. */
   readonly permissions: number;
 }
 
@@ -104,9 +108,9 @@ export interface ProgramConfig {
 }
 
 export type SettingsAction =
-  | Readonly<{ kind: "addSigner"; signer: SmartAccountSigner }>
-  | Readonly<{ kind: "removeSigner"; key: Address }>
-  | Readonly<{ kind: "changeThreshold"; threshold: number }>;
+  | Readonly<{ kind: "addSigner"; newSigner: SmartAccountSigner }>
+  | Readonly<{ kind: "removeSigner"; oldSigner: Address }>
+  | Readonly<{ kind: "changeThreshold"; newThreshold: number }>;
 
 /** A Squads PDA; every Squads seed list starts with "smart_account". */
 async function squadsPda(...seeds: Uint8Array[]): Promise<Address> {
@@ -127,7 +131,7 @@ export function settingsAddress(seed: bigint): Promise<Address> {
 }
 
 /** The vault: the smart account PDA of `settings` at index 0. */
-export function vaultAddress(settings: Address): Promise<Address> {
+export function smartAccountAddress(settings: Address): Promise<Address> {
   return squadsPda(
     new Uint8Array(addressEncoder.encode(settings)),
     utf8("smart_account"),
@@ -249,14 +253,14 @@ export function compileSyncPayload(
  * `executeTransactionSyncV2`: Squads checks that `approvers` meet the
  * threshold and permissions, then CPIs `inner` signed by the vault.
  */
-export async function executeTransactionSyncInstruction(
+export async function executeTransactionSyncV2Instruction(
   input: Readonly<{
     settings: Address;
     approvers: readonly TransactionSigner[];
     inner: readonly Instruction[];
   }>,
 ): Promise<Instruction> {
-  const vault = await vaultAddress(input.settings);
+  const vault = await smartAccountAddress(input.settings);
   const { payload, accounts } = compileSyncPayload(input.inner, vault);
   const data = new ByteWriter()
     .bytes(EXECUTE_TRANSACTION_SYNC_V2)
@@ -300,13 +304,13 @@ export function executeSettingsTransactionSyncInstruction(
   for (const action of input.actions) {
     switch (action.kind) {
       case "addSigner":
-        writeSigner(writer.u8(0), action.signer);
+        writeSigner(writer.u8(0), action.newSigner);
         break;
       case "removeSigner":
-        writer.u8(1).bytes(addressEncoder.encode(action.key));
+        writer.u8(1).bytes(addressEncoder.encode(action.oldSigner));
         break;
       case "changeThreshold":
-        writer.u8(2).u16(action.threshold);
+        writer.u8(2).u16(action.newThreshold);
         break;
     }
   }
@@ -341,13 +345,13 @@ export function rotationActions(
   const actions: SettingsAction[] = [];
   for (const signer of next) {
     if (!currentKeys.has(signer.key))
-      actions.push({ kind: "addSigner", signer });
+      actions.push({ kind: "addSigner", newSigner: signer });
   }
   if (threshold !== current.threshold)
-    actions.push({ kind: "changeThreshold", threshold });
+    actions.push({ kind: "changeThreshold", newThreshold: threshold });
   for (const signer of current.signers) {
     if (!nextKeys.has(signer.key))
-      actions.push({ kind: "removeSigner", key: signer.key });
+      actions.push({ kind: "removeSigner", oldSigner: signer.key });
   }
   return actions;
 }
@@ -358,7 +362,7 @@ export function rotationActions(
  * and execute. Also checks the account is autonomous with no time lock, so
  * only this consensus can change its signers.
  */
-export function checkSyncConsensus(
+export function checkSynchronousConsensus(
   settings: Settings,
   approvers: readonly Address[],
 ): void {
@@ -378,9 +382,9 @@ export function checkSyncConsensus(
     if (signer === undefined)
       throw new Error(`${approver} is not a Squads signer`);
     mask |= signer.permissions;
-    if ((signer.permissions & Permission.Vote) !== 0) votes += 1;
+    if ((signer.permissions & SmartAccountPermission.Vote) !== 0) votes += 1;
   }
-  if ((mask & Permission.All) !== Permission.All) {
+  if ((mask & ALL_PERMISSIONS) !== ALL_PERMISSIONS) {
     throw new Error("approvers must together hold initiate, vote and execute");
   }
   if (votes < settings.threshold) {

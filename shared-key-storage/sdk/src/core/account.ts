@@ -41,28 +41,28 @@ export async function fetchVaultRegistry(
 
 /**
  * The current key record: the one the vault's storage pointer names. It
- * must belong to `settings`, name exactly the wallet's signers, and hold the
+ * must belong to `accountId`, name exactly the wallet's signers, and hold the
  * registered viewing key; a wallet transaction that changed the signers
  * outside the rotate flow breaks the last two.
  */
 export function currentKeyRecord(
   registry: VaultRegistry,
-  settings: Address,
+  accountId: Address,
   signers: readonly Address[],
 ): KeyRecordPublication {
   const { current } = registry;
   if (current === undefined) {
-    throw new Error(`the vault of ${settings} has no key record`);
+    throw new Error(`the vault of ${accountId} has no key record`);
   }
   if (
     !isCurrentKeyRecord(current.record, {
-      settings,
+      accountId,
       signers,
       registeredViewingPublicKey: registry.viewingPublicKey,
     })
   ) {
     throw new Error(
-      `the key record of ${settings} does not match its signers and registered key`,
+      `the key record of ${accountId} does not match its signers and registered key`,
     );
   }
   return current;

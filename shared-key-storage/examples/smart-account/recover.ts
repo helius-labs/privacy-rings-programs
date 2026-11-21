@@ -19,8 +19,8 @@ import {
   type Member,
 } from "@heliuslabs/shared-key-storage";
 import { fetchSettings } from "../helpers/smart-account/account.js";
-import { vaultAddress } from "../helpers/smart-account/program.js";
-import { recoverVaultKeys } from "../helpers/smart-account/recover.js";
+import { smartAccountAddress } from "../helpers/smart-account/program.js";
+import { recoverSmartAccountVaultKeys } from "../helpers/smart-account/recover.js";
 import { vaultKeys } from "../helpers/spend.js";
 import {
   addressArgument,
@@ -34,7 +34,7 @@ const settings = addressArgument("smart-account-recover", "settings");
 
 const session = await connect();
 const { client } = session;
-const vault = await vaultAddress(settings);
+const vault = await smartAccountAddress(settings);
 
 // 1. The current key record.
 const published = await fetchPublishedKeyRecord(client, vault);
@@ -49,7 +49,7 @@ const { members, others } = membersAmong(
   (await fetchSettings(client, settings)).signers.map((signer) => signer.key),
 );
 const recover = (member: Member) =>
-  recoverVaultKeys({ client, settings, member });
+  recoverSmartAccountVaultKeys({ client, settings, member });
 await assertMembersRecover({
   members,
   removed: others,

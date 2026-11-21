@@ -35,7 +35,7 @@ export async function registerSwigVaultInstruction(
   checkViewKeyAuthority(decoded, input.authority.address);
   if (
     !isCurrentKeyRecord(input.record, {
-      settings: input.swig,
+      accountId: input.swig,
       signers: swigMembers(decoded),
       registeredViewingPublicKey: input.record.sharedViewingPublicKey,
     })

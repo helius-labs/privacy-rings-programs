@@ -40,63 +40,63 @@ function member(): Member {
   return { address: keypair.shieldedAddress().solanaAddress(), keypair };
 }
 
-async function settingsAddress(): Promise<Address> {
+async function newAddress(): Promise<Address> {
   return (await generateKeyPairSigner()).address;
 }
 
 const vaults = new Map<Address, Address>();
 
-/** The vault of the wallet account `settings`: one generated address each. */
-async function vaultAddress(settings: Address): Promise<Address> {
-  const vault = vaults.get(settings) ?? (await settingsAddress());
-  vaults.set(settings, vault);
+/** The vault of the wallet account `accountId`: one generated address each. */
+async function vaultAddress(accountId: Address): Promise<Address> {
+  const vault = vaults.get(accountId) ?? (await newAddress());
+  vaults.set(accountId, vault);
   return vault;
 }
 
 /**
  * An approver's checks of `record`, uploaded and frozen under the vault of
- * `settings`, against a chain whose storage pointer names `published` for
+ * `accountId`, against a chain whose storage pointer names `published` for
  * that vault, or no pointer at all: the proposed record, then its own entry.
  */
 async function approve(
   record: KeyRecord,
   approver: Member,
   published?: KeyRecord,
-  settings: Address = record.settings,
+  accountId: Address = record.accountId,
 ): Promise<void> {
   const accounts: FakeAccounts = new Map();
   if (published !== undefined) {
-    const vault = await vaultAddress(published.settings);
+    const vault = await vaultAddress(published.accountId);
     await publish(accounts, {
       owner: vault,
-      record: await settingsAddress(),
+      record: await newAddress(),
       bytes: encodeKeyRecord(published),
     });
   }
-  const uploaded = await settingsAddress();
+  const uploaded = await newAddress();
   upload(accounts, {
-    owner: await vaultAddress(settings),
+    owner: await vaultAddress(accountId),
     record: uploaded,
     bytes: encodeKeyRecord(record),
   });
   await checkProposedKeyRecord({
     client: accountClient(accounts),
-    accountId: settings,
-    vault: await vaultAddress(settings),
+    accountId: accountId,
+    vault: await vaultAddress(accountId),
     record,
     upload: uploaded,
   });
   checkEntryOpens(record, memberFromKeypair(approver.keypair));
 }
 
-function recordFor(settings: Address, members: readonly Member[], epoch = 0n) {
+function recordFor(accountId: Address, members: readonly Member[], epoch = 0n) {
   const viewingKey = ViewingKey.generate();
   const nullifierKey = generateNullifierKey();
   const previousViewingKeys = Array.from({ length: Number(epoch) }, () =>
     ViewingKey.generate(),
   );
   const record = buildKeyRecord({
-    settings,
+    accountId,
     epoch,
     secrets: { viewingKey, nullifierKey },
     previousViewingKeys,
@@ -118,7 +118,7 @@ function rotateRecord(
     previous.viewingKey,
   ];
   const record = buildKeyRecord({
-    settings: previous.record.settings,
+    accountId: previous.record.accountId,
     epoch: previous.record.epoch + 1n,
     secrets: { viewingKey, nullifierKey: previous.nullifierKey },
     previousViewingKeys,
@@ -143,7 +143,7 @@ describe("key record", () => {
   it("every signer recovers both shared secrets", async () => {
     const members = [member(), member(), member()];
     const { record, viewingKey, nullifierKey } = recordFor(
-      await settingsAddress(),
+      await newAddress(),
       members,
     );
     for (const { address, keypair } of members) {
@@ -161,7 +161,7 @@ describe("key record", () => {
 
   it("round-trips the signer entries and complete historical key vector", async () => {
     const members = [member(), member()];
-    const { record } = recordFor(await settingsAddress(), members, 7n);
+    const { record } = recordFor(await newAddress(), members, 7n);
     const encoded = encodeKeyRecord(record);
     assert.equal(encoded.length, 177 + 97 * 2 + 65 * 7);
     assert.deepEqual(decodeKeyRecord(encoded), record);
@@ -169,14 +169,14 @@ describe("key record", () => {
 
   it("sorts entries by signer", async () => {
     const members = [member(), member(), member(), member()];
-    const { record } = recordFor(await settingsAddress(), members);
+    const { record } = recordFor(await newAddress(), members);
     const signers = record.entries.map((entry) => entry.signer);
     assert.deepEqual(signers, [...signers].sort(compareAddresses));
   });
 
   it("a signer detects a garbage ciphertext in its entry", async () => {
     const members = [member(), member()];
-    const { record } = recordFor(await settingsAddress(), members);
+    const { record } = recordFor(await newAddress(), members);
     const target = members[0]!;
     const tampered: KeyRecord = {
       ...record,
@@ -198,7 +198,7 @@ describe("key record", () => {
 
   it("every signer detects a garbage nullifier ciphertext", async () => {
     const members = [member(), member()];
-    const { record } = recordFor(await settingsAddress(), members);
+    const { record } = recordFor(await newAddress(), members);
     const tampered = {
       ...record,
       nullifierCiphertext: record.nullifierCiphertext.map((byte) => byte ^ 1),
@@ -212,7 +212,7 @@ describe("key record", () => {
   });
 
   it("a non-signer has no entry", async () => {
-    const { record } = recordFor(await settingsAddress(), [member()]);
+    const { record } = recordFor(await newAddress(), [member()]);
     const outsider = member();
     assert.throws(
       () => recoverSharedSecrets(record, outsider.address, outsider.keypair),
@@ -224,7 +224,7 @@ describe("key record", () => {
     const alice = member();
     const bob = member();
     const carol = member();
-    const first = recordFor(await settingsAddress(), [alice]);
+    const first = recordFor(await newAddress(), [alice]);
     const second = rotateRecord(first, [alice, bob]);
     const third = rotateRecord(second, [alice, carol]);
     checkKeyHistory(second.record, first.record);
@@ -260,7 +260,7 @@ describe("key record", () => {
   });
 
   it("derives a distinct encryption key for each historical secret", async () => {
-    const fixture = recordFor(await settingsAddress(), [member()], 2n);
+    const fixture = recordFor(await newAddress(), [member()], 2n);
     const streams = fixture.record.oldViewingKeys.map((entry, index) => {
       const secret = fixture.previousViewingKeys[index]!.secretBytes();
       return entry.ciphertext.map((byte, offset) => byte ^ secret[offset]!);
@@ -285,7 +285,7 @@ describe("key record", () => {
 
   it("approvers reject corrupted historical ciphertexts", async () => {
     const alice = member();
-    const first = recordFor(await settingsAddress(), [alice]);
+    const first = recordFor(await newAddress(), [alice]);
     const second = rotateRecord(first, [alice]);
     const tampered: KeyRecord = {
       ...second.record,
@@ -304,7 +304,7 @@ describe("key record", () => {
 
   it("approvers reject omitted or substituted old keys and require the previous record", async () => {
     const alice = member();
-    const first = recordFor(await settingsAddress(), [alice]);
+    const first = recordFor(await newAddress(), [alice]);
     const second = rotateRecord(first, [alice]);
     const third = rotateRecord(second, [alice]);
     await assert.rejects(
@@ -334,7 +334,7 @@ describe("key record", () => {
       /complete previous history/,
     );
     const substituted = buildKeyRecord({
-      settings: first.record.settings,
+      accountId: first.record.accountId,
       epoch: 1n,
       secrets: {
         viewingKey: second.viewingKey,
@@ -356,7 +356,7 @@ describe("key record", () => {
 
   it("approvers check against the record on chain, not one the rotator supplies", async () => {
     const alice = member();
-    const first = recordFor(await settingsAddress(), [alice]);
+    const first = recordFor(await newAddress(), [alice]);
     const second = rotateRecord(first, [alice]);
     const third = rotateRecord(second, [alice]);
     // `third` extends `second`, but the vault's pointer still names `first`.
@@ -366,22 +366,22 @@ describe("key record", () => {
       /does not extend the previous record/,
     );
     await assert.rejects(
-      approve(first.record, alice, undefined, await settingsAddress()),
+      approve(first.record, alice, undefined, await newAddress()),
       /key record belongs to/,
     );
   });
 
-  it("a record must extend the previous record's settings, epoch and nullifier key", async () => {
+  it("a record must extend the previous record's account, epoch and nullifier key", async () => {
     const alice = member();
-    const first = recordFor(await settingsAddress(), [alice]);
+    const first = recordFor(await newAddress(), [alice]);
     const second = rotateRecord(first, [alice]);
     const third = rotateRecord(second, [alice]);
-    const other = recordFor(await settingsAddress(), [alice]);
+    const other = recordFor(await newAddress(), [alice]);
     const cases: [string, KeyRecord, KeyRecord][] = [
       [
         "another Settings account",
         second.record,
-        { ...first.record, settings: other.record.settings },
+        { ...first.record, accountId: other.record.accountId },
       ],
       ["a skipped epoch", third.record, first.record],
       [
@@ -403,7 +403,7 @@ describe("key record", () => {
   });
 
   it("the codec rejects missing, truncated and mismatched historical key vectors", async () => {
-    const fixture = recordFor(await settingsAddress(), [member()], 1n);
+    const fixture = recordFor(await newAddress(), [member()], 1n);
     const encoded = encodeKeyRecord(fixture.record);
     assert.throws(() => decodeKeyRecord(encoded.slice(0, -1)), /truncated/);
     assert.throws(() => decodeKeyRecord(encoded.slice(0, -69)), /truncated/);
@@ -415,10 +415,10 @@ describe("key record", () => {
 
   it("the builder rejects duplicate historical keys", async () => {
     const alice = member();
-    const fixture = recordFor(await settingsAddress(), [alice]);
+    const fixture = recordFor(await newAddress(), [alice]);
     const build = (previousViewingKeys: ViewingKey[], epoch: bigint) =>
       buildKeyRecord({
-        settings: fixture.record.settings,
+        accountId: fixture.record.accountId,
         epoch,
         secrets: {
           viewingKey: fixture.viewingKey,
@@ -439,25 +439,25 @@ describe("key record", () => {
   });
 
   it("the current record must match the signers and the registered key", async () => {
-    const settings = await settingsAddress();
+    const accountId = await newAddress();
     const [a, b, c] = [member(), member(), member()];
-    const first = recordFor(settings, [a, b], 0n).record;
-    const second = recordFor(settings, [a, c], 1n).record;
+    const first = recordFor(accountId, [a, b], 0n).record;
+    const second = recordFor(accountId, [a, c], 1n).record;
     const signers = [a, c].map(({ address }) => address);
     const current = {
-      address: await settingsAddress(),
+      address: await newAddress(),
       record: second,
     };
     const registry: VaultRegistry = {
       viewingPublicKey: second.sharedViewingPublicKey,
       current,
     };
-    assert.deepEqual(currentKeyRecord(registry, settings, signers), current);
+    assert.deepEqual(currentKeyRecord(registry, accountId, signers), current);
 
     const mismatches: [string, () => unknown, RegExp][] = [
       [
         "a signer set the record does not name",
-        () => currentKeyRecord(registry, settings, [a.address, b.address]),
+        () => currentKeyRecord(registry, accountId, [a.address, b.address]),
         /does not match/,
       ],
       [
@@ -465,7 +465,7 @@ describe("key record", () => {
         () =>
           currentKeyRecord(
             { ...registry, viewingPublicKey: first.sharedViewingPublicKey },
-            settings,
+            accountId,
             signers,
           ),
         /does not match/,
@@ -480,7 +480,7 @@ describe("key record", () => {
         () =>
           currentKeyRecord(
             { ...registry, current: undefined },
-            settings,
+            accountId,
             signers,
           ),
         /no key record/,

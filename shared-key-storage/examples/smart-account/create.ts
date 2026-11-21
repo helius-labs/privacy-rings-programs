@@ -17,11 +17,11 @@
  */
 import { storagePointerAddress } from "@heliuslabs/shared-key-storage";
 import { createSmartAccount } from "../helpers/smart-account/create.js";
-import { Permission } from "../helpers/smart-account/program.js";
-import { recoverVaultKeys } from "../helpers/smart-account/recover.js";
+import { ALL_PERMISSIONS } from "../helpers/smart-account/program.js";
+import { recoverSmartAccountVaultKeys } from "../helpers/smart-account/recover.js";
 import {
   checkRegistration,
-  registerVaultInstruction,
+  registerSmartAccountVaultInstruction,
 } from "../helpers/smart-account/register.js";
 import {
   VAULT_SOL,
@@ -48,7 +48,7 @@ const created = await createSmartAccount({
   threshold: 2,
   signers: members.map((member) => ({
     ...recipient(member),
-    permissions: Permission.All,
+    permissions: ALL_PERMISSIONS,
   })),
 });
 const { settings, vault, record } = created;
@@ -64,7 +64,7 @@ const upload = await uploadKeyRecord(session, vault, record);
 
 // 4. Register, approved by Alice and Bob.
 const approvers = [alice, bob];
-const register = await registerVaultInstruction({
+const register = await registerSmartAccountVaultInstruction({
   client,
   settings,
   approvers: approvers.map((approver) => approver.signer),
@@ -91,7 +91,8 @@ console.log(
 await assertMembersRecover({
   members,
   expected: record,
-  recover: (member) => recoverVaultKeys({ client, settings, member }),
+  recover: (member) =>
+    recoverSmartAccountVaultKeys({ client, settings, member }),
 });
 
 console.log(`settings: ${settings}`);

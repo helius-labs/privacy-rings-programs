@@ -20,8 +20,8 @@
  * Run: pnpm smart-account-rotate <settings>
  */
 import { fetchSettings } from "../helpers/smart-account/account.js";
-import { Permission } from "../helpers/smart-account/program.js";
-import { recoverVaultKeys } from "../helpers/smart-account/recover.js";
+import { ALL_PERMISSIONS } from "../helpers/smart-account/program.js";
+import { recoverSmartAccountVaultKeys } from "../helpers/smart-account/recover.js";
 import {
   checkRotation,
   rotateSmartAccount,
@@ -58,7 +58,7 @@ await ensureRegistered(session, joining);
 // 1. Build the next key record.
 const approvers = [alice, bob];
 const keep = [alice.signer.address, bob.signer.address];
-const added = { ...recipient(joining), permissions: Permission.All };
+const added = { ...recipient(joining), permissions: ALL_PERMISSIONS };
 const rotation = await rotateSmartAccount({
   client,
   settings,
@@ -102,7 +102,8 @@ await assertMembersRecover({
   members: [alice, bob, joining],
   removed: [leaving],
   expected: record,
-  recover: (member) => recoverVaultKeys({ client, settings, member }),
+  recover: (member) =>
+    recoverSmartAccountVaultKeys({ client, settings, member }),
 });
 console.log(
   `record:   ${rotation.upload.address} (key record ${record.epoch})`,

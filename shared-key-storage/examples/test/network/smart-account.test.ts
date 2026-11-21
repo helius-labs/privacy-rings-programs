@@ -20,19 +20,20 @@ import {
 import { fetchSettings } from "../../helpers/smart-account/account.js";
 import { createSmartAccount } from "../../helpers/smart-account/create.js";
 import {
-  executeTransactionSyncInstruction,
-  Permission,
+  executeTransactionSyncV2Instruction,
+  ALL_PERMISSIONS,
+  SmartAccountPermission,
 } from "../../helpers/smart-account/program.js";
-import { recoverVaultKeys } from "../../helpers/smart-account/recover.js";
+import { recoverSmartAccountVaultKeys } from "../../helpers/smart-account/recover.js";
 import {
   checkRegistration,
-  registerVaultInstruction,
+  registerSmartAccountVaultInstruction,
 } from "../../helpers/smart-account/register.js";
 import {
   checkRotation,
   rotateSmartAccount,
 } from "../../helpers/smart-account/rotate.js";
-import { spendInstruction } from "../../helpers/smart-account/spend.js";
+import { smartAccountSpendInstruction } from "../../helpers/smart-account/spend.js";
 import { vaultKeys } from "../../helpers/spend.js";
 import {
   depositToVault,
@@ -62,7 +63,7 @@ async function createTwoOfTwo(
     threshold: 2,
     signers: [alice, bob].map((member) => ({
       key: member.signer.address,
-      permissions: Permission.All,
+      permissions: ALL_PERMISSIONS,
       viewingPublicKey: member.keypair.viewingPublicKey(),
     })),
   });
@@ -77,7 +78,7 @@ async function createTwoOfTwo(
       )
       .map((member) => member.signer);
     await send(client, payer, [
-      await executeTransactionSyncInstruction({
+      await executeTransactionSyncV2Instruction({
         settings: created.settings,
         approvers,
         inner: [transferSol(created.vault, payer.address, balance)],
@@ -122,7 +123,7 @@ test(
       record: created.record,
     });
     await uploadRecord(client, payer, created.vault, firstUpload, t);
-    const register = await registerVaultInstruction({
+    const register = await registerSmartAccountVaultInstruction({
       client,
       settings: created.settings,
       approvers: [alice.signer, bob.signer],
@@ -145,7 +146,7 @@ test(
       await vaultRegistry(client, created.vault),
       publishedRegistry(created.record, firstUpload),
     );
-    const bobKeys = await recoverVaultKeys({
+    const bobKeys = await recoverSmartAccountVaultKeys({
       client,
       settings: created.settings,
       member: bob,
@@ -169,7 +170,7 @@ test(
 
     // 3. Spend: Bob initiates a 3,000,000-lamport payment, Alice approves.
     await send(client, payer, [
-      await spendInstruction({
+      await smartAccountSpendInstruction({
         client,
         settings: created.settings,
         approvers: [alice.signer, bob.signer],
@@ -204,7 +205,7 @@ test(
       add: [
         {
           key: carol.signer.address,
-          permissions: Permission.All,
+          permissions: ALL_PERMISSIONS,
           viewingPublicKey: carol.keypair.viewingPublicKey(),
         },
       ],
@@ -225,7 +226,7 @@ test(
         approvers: [alice.signer.address, bob.signer.address],
         rentPayer: alice.signer.address,
         keep: [alice.signer.address],
-        add: [{ key: carol.signer.address, permissions: Permission.All }],
+        add: [{ key: carol.signer.address, permissions: ALL_PERMISSIONS }],
         threshold: 2,
         proposed: rotation.instructions,
       });
@@ -259,7 +260,7 @@ test(
     );
 
     // Carol can decrypt the remaining UTXO even though it predates her membership.
-    const carolKeys = await recoverVaultKeys({
+    const carolKeys = await recoverSmartAccountVaultKeys({
       client,
       settings: created.settings,
       member: carol,
@@ -281,7 +282,7 @@ test(
     // Alice was a signer before the rotate, so she still opens the vault's
     // older UTXO with the earlier viewing key retained in the current record,
     // and spends it with Carol.
-    const aliceKeys = await recoverVaultKeys({
+    const aliceKeys = await recoverSmartAccountVaultKeys({
       client,
       settings: created.settings,
       member: alice,
@@ -300,7 +301,7 @@ test(
       7_000_000n,
     );
     await send(client, payer, [
-      await spendInstruction({
+      await smartAccountSpendInstruction({
         client,
         settings: created.settings,
         approvers: [alice.signer, carol.signer],
@@ -365,7 +366,7 @@ test(
     );
     assert.equal(await client.getAccount(firstUpload.address), undefined);
     assert.equal(await client.getAccount(rotation.upload.address), undefined);
-    const carolAfter = await recoverVaultKeys({
+    const carolAfter = await recoverSmartAccountVaultKeys({
       client,
       settings: created.settings,
       member: carol,
@@ -417,7 +418,7 @@ test(
       record: created.record,
     });
     await uploadRecord(client, payer, created.vault, firstUpload, t);
-    const register = await registerVaultInstruction({
+    const register = await registerSmartAccountVaultInstruction({
       client,
       settings: created.settings,
       approvers: [alice.signer, bob.signer],
@@ -434,7 +435,7 @@ test(
         add: [
           {
             key: bob.signer.address,
-            permissions: Permission.Vote,
+            permissions: SmartAccountPermission.Vote,
             viewingPublicKey: bob.keypair.viewingPublicKey(),
           },
         ],

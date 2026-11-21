@@ -14,7 +14,10 @@ import {
   type KeyRecord,
   type Member,
 } from "@heliuslabs/shared-key-storage";
-import { executeTransactionSyncInstruction, vaultAddress } from "./program.js";
+import {
+  executeTransactionSyncV2Instruction,
+  smartAccountAddress,
+} from "./program.js";
 import { checkApprovers, checkOwnEntry } from "./account.js";
 
 /**
@@ -26,7 +29,7 @@ import { checkApprovers, checkOwnEntry } from "./account.js";
  * fails on chain once the vault is registered, so a second Register cannot
  * replace the keys.
  */
-export async function registerVaultInstruction(
+export async function registerSmartAccountVaultInstruction(
   input: Readonly<{
     client: SprClient;
     settings: Address;
@@ -42,15 +45,15 @@ export async function registerVaultInstruction(
   );
   if (
     !isCurrentKeyRecord(input.record, {
-      settings: input.settings,
+      accountId: input.settings,
       signers: decoded.signers.map((signer) => signer.key),
       registeredViewingPublicKey: input.record.sharedViewingPublicKey,
     })
   ) {
     throw new Error("the key record does not name the Squads signers");
   }
-  const vault = await vaultAddress(input.settings);
-  return executeTransactionSyncInstruction({
+  const vault = await smartAccountAddress(input.settings);
+  return executeTransactionSyncV2Instruction({
     settings: input.settings,
     approvers: input.approvers,
     inner: await createKeyRecordInstructions({
@@ -82,7 +85,7 @@ export async function checkRegistration(
   await checkOwnEntry(input);
   checkInstructionsMatch(
     [
-      await registerVaultInstruction({
+      await registerSmartAccountVaultInstruction({
         client: input.client,
         settings: input.settings,
         approvers: input.approvers.map((approver) =>

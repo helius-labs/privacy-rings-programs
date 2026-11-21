@@ -11,12 +11,12 @@ import {
   decodeProgramConfig,
   programConfigAddress,
   settingsAddress,
-  vaultAddress,
+  smartAccountAddress,
 } from "./program.js";
 import { accountData } from "../account.js";
 import { sortedSigners, type NewSigner } from "./account.js";
 
-export interface CreatedAccount {
+export interface CreatedSmartAccount {
   readonly settings: Address;
   readonly vault: Address;
   /** Record 0; Register writes it on chain. */
@@ -40,7 +40,7 @@ export async function createSmartAccount(
     signers: readonly NewSigner[];
     threshold: number;
   }>,
-): Promise<CreatedAccount> {
+): Promise<CreatedSmartAccount> {
   const configData = await accountData(
     input.client,
     await programConfigAddress(),
@@ -49,7 +49,7 @@ export async function createSmartAccount(
     throw new Error("the Squads ProgramConfig account is missing");
   const config = decodeProgramConfig(configData);
   const settings = await settingsAddress(config.smartAccountIndex + 1n);
-  const vault = await vaultAddress(settings);
+  const vault = await smartAccountAddress(settings);
   const record = createKeyRecord({
     accountId: settings,
     recipients: input.signers,

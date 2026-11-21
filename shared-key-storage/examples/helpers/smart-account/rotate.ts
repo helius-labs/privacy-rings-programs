@@ -20,11 +20,11 @@ import {
   withRegisteredViewingKeys,
 } from "@heliuslabs/shared-key-storage";
 import {
-  checkSyncConsensus,
+  checkSynchronousConsensus,
   executeSettingsTransactionSyncInstruction,
-  executeTransactionSyncInstruction,
+  executeTransactionSyncV2Instruction,
   rotationActions,
-  vaultAddress,
+  smartAccountAddress,
   type Settings,
   type SmartAccountSigner,
 } from "./program.js";
@@ -37,7 +37,7 @@ import {
   type NewSigner,
 } from "./account.js";
 
-export interface Rotation {
+export interface SmartAccountRotation {
   readonly record: KeyRecord;
   /** Send these upload transactions before the final atomic transaction. */
   readonly upload: RecordUpload;
@@ -87,9 +87,9 @@ export async function rotateSmartAccountInstructions(
   ) {
     throw new Error("the new signers are not the key record's signers");
   }
-  const vault = await vaultAddress(input.settings);
+  const vault = await smartAccountAddress(input.settings);
   const instructions: Instruction[] = [
-    await executeTransactionSyncInstruction({
+    await executeTransactionSyncV2Instruction({
       settings: input.settings,
       approvers: input.approvers,
       inner: await updateKeyRecordInstructions({
@@ -137,7 +137,7 @@ export async function rotateSmartAccount(
     add: readonly NewSigner[];
     threshold: number;
   }>,
-): Promise<Rotation> {
+): Promise<SmartAccountRotation> {
   const current = await checkApprovers(
     input.client,
     input.settings,
@@ -170,7 +170,7 @@ export async function rotateSmartAccount(
     rotator: input.rotator,
     recipients: next,
   });
-  const vault = await vaultAddress(input.settings);
+  const vault = await smartAccountAddress(input.settings);
   const upload = await prepareKeyRecordUpload({
     owner: vault,
     payer: input.payer,
@@ -226,7 +226,7 @@ export async function checkRotation(
 ): Promise<void> {
   const { record, member } = input;
   const current = await fetchSettings(input.client, input.settings);
-  checkSyncConsensus(current, input.approvers);
+  checkSynchronousConsensus(current, input.approvers);
   const published = await checkProposedKeyRecord(input);
   if (published === undefined) {
     throw new Error(`the vault of ${input.settings} has no key record`);

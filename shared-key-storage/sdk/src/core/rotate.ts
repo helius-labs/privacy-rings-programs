@@ -31,7 +31,7 @@ export function createKeyRecord(
   };
   try {
     return buildKeyRecord({
-      settings: input.accountId,
+      accountId: input.accountId,
       epoch: 0n,
       secrets,
       previousViewingKeys: [],
@@ -69,7 +69,7 @@ export function rotatedKeyRecord(
   try {
     previousViewingKeys = recoverOldViewingKeys(record, secrets.viewingKey);
     const next = buildKeyRecord({
-      settings: input.accountId,
+      accountId: input.accountId,
       epoch: record.epoch + 1n,
       secrets: newSecrets,
       previousViewingKeys: [...previousViewingKeys, secrets.viewingKey],

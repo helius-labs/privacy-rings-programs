@@ -34,8 +34,8 @@ export async function checkProposedKeyRecord(
   }>,
 ): Promise<KeyRecordPublication | undefined> {
   const { record } = input;
-  if (record.settings !== input.accountId) {
-    throw new Error(`the key record belongs to ${record.settings}`);
+  if (record.accountId !== input.accountId) {
+    throw new Error(`the key record belongs to ${record.accountId}`);
   }
   await checkUploadedRecord(
     input.client.solanaRpc,

@@ -15,9 +15,9 @@ import { SOL_MINT } from "@heliuslabs/spr";
 import { ShieldedKeypair } from "@heliuslabs/spr/keypair";
 import { LocalShieldedKeys } from "@heliuslabs/spr/transaction";
 import { fetchSettings } from "../helpers/smart-account/account.js";
-import { vaultAddress } from "../helpers/smart-account/program.js";
-import { recoverVaultKeys } from "../helpers/smart-account/recover.js";
-import { spendInstruction } from "../helpers/smart-account/spend.js";
+import { smartAccountAddress } from "../helpers/smart-account/program.js";
+import { recoverSmartAccountVaultKeys } from "../helpers/smart-account/recover.js";
+import { smartAccountSpendInstruction } from "../helpers/smart-account/spend.js";
 import { vaultKeys } from "../helpers/spend.js";
 import {
   addressArgument,
@@ -35,12 +35,16 @@ const settings = addressArgument("smart-account-spend", "settings");
 
 const session = await connect({ prover: true });
 const { client, rpc, wallet, alice, bob } = session;
-const vault = await vaultAddress(settings);
+const vault = await smartAccountAddress(settings);
 const recipient = ShieldedKeypair.generate();
 const amount = 3_000_000n;
 
 // 1. Recover.
-const recovered = await recoverVaultKeys({ client, settings, member: bob });
+const recovered = await recoverSmartAccountVaultKeys({
+  client,
+  settings,
+  member: bob,
+});
 const { members } = membersAmong(
   session,
   (await fetchSettings(client, settings)).signers.map((signer) => signer.key),
@@ -48,7 +52,8 @@ const { members } = membersAmong(
 await assertMembersRecover({
   members,
   expected: recovered.record,
-  recover: (member) => recoverVaultKeys({ client, settings, member }),
+  recover: (member) =>
+    recoverSmartAccountVaultKeys({ client, settings, member }),
 });
 const keys = vaultKeys(client, vault, recovered.secrets, recovered.viewingKeys);
 
@@ -66,7 +71,7 @@ const funded = await syncedBalance(
 console.log(`vault balance: ${before + DEPOSIT} lamports`);
 
 // 3. Spend, built by Bob and approved by Alice and Bob.
-const spend = await spendInstruction({
+const spend = await smartAccountSpendInstruction({
   client,
   settings,
   approvers: [alice.signer, bob.signer],

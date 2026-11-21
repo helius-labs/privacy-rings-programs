@@ -23,10 +23,10 @@ import {
 } from "@heliuslabs/shared-key-storage";
 import { fetchSettings } from "../helpers/smart-account/account.js";
 import {
-  executeTransactionSyncInstruction,
-  vaultAddress,
+  executeTransactionSyncV2Instruction,
+  smartAccountAddress,
 } from "../helpers/smart-account/program.js";
-import { recoverVaultKeys } from "../helpers/smart-account/recover.js";
+import { recoverSmartAccountVaultKeys } from "../helpers/smart-account/recover.js";
 import {
   addressArgument,
   assertMembersRecover,
@@ -40,7 +40,7 @@ const settings = addressArgument("smart-account-close", "settings");
 
 const session = await connect();
 const { client, rpc, wallet, alice, bob } = session;
-const vault = await vaultAddress(settings);
+const vault = await smartAccountAddress(settings);
 const current = await fetchPublishedKeyRecord(client, vault);
 if (current === undefined) throw new Error(`${settings} has no key record`);
 console.log(
@@ -54,12 +54,12 @@ const { members } = membersAmong(
   (await fetchSettings(client, settings)).signers.map((signer) => signer.key),
 );
 const recover = (member: Member) =>
-  recoverVaultKeys({ client, settings, member });
+  recoverSmartAccountVaultKeys({ client, settings, member });
 await assertMembersRecover({ members, expected: current.record, recover });
 
 // 2. Close, approved by Alice and Bob.
 const before = await balance(rpc, vault);
-const close = await executeTransactionSyncInstruction({
+const close = await executeTransactionSyncV2Instruction({
   settings,
   approvers: [alice.signer, bob.signer],
   inner: await removeRecordInstructions({

@@ -19,9 +19,9 @@ import {
   type Member,
 } from "@heliuslabs/shared-key-storage";
 import {
-  checkSyncConsensus,
+  checkSynchronousConsensus,
   decodeSettings,
-  vaultAddress,
+  smartAccountAddress,
   type Settings,
   type SmartAccountSigner,
 } from "./program.js";
@@ -52,7 +52,7 @@ export async function fetchCurrentKeyRecord(
   return fetchCurrentVaultRecord(
     client,
     settings,
-    await vaultAddress(settings),
+    await smartAccountAddress(settings),
     decoded.signers.map((signer) => signer.key),
   );
 }
@@ -68,7 +68,7 @@ export async function checkProposedKeyRecord(
   return checkProposedVaultRecord({
     ...input,
     accountId: input.settings,
-    vault: await vaultAddress(input.settings),
+    vault: await smartAccountAddress(input.settings),
   });
 }
 
@@ -113,7 +113,7 @@ export async function checkApprovers(
   approvers: readonly TransactionSigner[],
 ): Promise<Settings> {
   const decoded = await fetchSettings(client, settings);
-  checkSyncConsensus(
+  checkSynchronousConsensus(
     decoded,
     approvers.map((approver) => approver.address),
   );

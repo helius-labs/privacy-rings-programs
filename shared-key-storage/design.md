@@ -59,8 +59,8 @@ A client checks that the current record's `shared_viewing_pubkey` equals the vau
 ```rust
 /// Borsh-serialized key record, stored as the data of an SPL Record account.
 pub struct KeyRecord {
-    /// The Squads Settings account this record belongs to.
-    pub settings: Pubkey,
+    /// The wallet account this record belongs to: Squads Settings or the Swig.
+    pub account_id: Pubkey,
     /// 0 at create, incremented by every rotate.
     pub epoch: u64,
     /// Tagged X25519 public key of the shared viewing secret.

@@ -35,15 +35,15 @@ import {
 } from "@heliuslabs/shared-key-storage";
 import {
   decodeSettings,
-  executeTransactionSyncInstruction,
-  Permission,
+  executeTransactionSyncV2Instruction,
+  ALL_PERMISSIONS,
   SMART_ACCOUNT_PROGRAM_ADDRESS,
   type SmartAccountSigner,
-  vaultAddress,
+  smartAccountAddress,
 } from "../../helpers/smart-account/program.js";
 import {
   checkRegistration,
-  registerVaultInstruction,
+  registerSmartAccountVaultInstruction,
 } from "../../helpers/smart-account/register.js";
 import {
   checkRotation,
@@ -67,7 +67,7 @@ function newMember(): Member {
 }
 
 function signerWithAllPermissions(member: Member): SmartAccountSigner {
-  return { key: member.signer.address, permissions: Permission.All };
+  return { key: member.signer.address, permissions: ALL_PERMISSIONS };
 }
 
 /** An autonomous Squads Settings account with no time lock. */
@@ -105,7 +105,7 @@ function keyRecordFor(
   },
 ) {
   const record = buildKeyRecord({
-    settings,
+    accountId: settings,
     epoch: BigInt(previousViewingKeys.length),
     secrets,
     previousViewingKeys,
@@ -124,7 +124,7 @@ function keyRecordFor(
 async function rotationScenario() {
   const [alice, bob, carol] = [newMember(), newMember(), newMember()];
   const settings = await newAddress();
-  const vault = await vaultAddress(settings);
+  const vault = await smartAccountAddress(settings);
   const currentSigners = [alice, bob].map(signerWithAllPermissions);
   const accounts: FakeAccounts = new Map();
   accounts.set(settings, {
@@ -238,7 +238,7 @@ describe("approver checks", () => {
     const close = inner.at(-1);
     assert.ok(close?.accounts);
     const thief = await newAddress();
-    const redirected = await executeTransactionSyncInstruction({
+    const redirected = await executeTransactionSyncV2Instruction({
       settings,
       approvers: scenario.approvers.map((approver) =>
         createNoopSigner(approver),
@@ -355,7 +355,7 @@ describe("approver checks", () => {
   it("checks the Register instruction the same way", async () => {
     const [alice, bob] = [newMember(), newMember()];
     const settings = await newAddress();
-    const vault = await vaultAddress(settings);
+    const vault = await smartAccountAddress(settings);
     const accounts: FakeAccounts = new Map();
     accounts.set(settings, {
       owner: SMART_ACCOUNT_PROGRAM_ADDRESS,
@@ -371,7 +371,7 @@ describe("approver checks", () => {
     const client = accountClient(accounts);
     const approvers = [alice.signer.address, bob.signer.address];
     const register = (published: Address) =>
-      registerVaultInstruction({
+      registerSmartAccountVaultInstruction({
         client,
         settings,
         approvers: approvers.map((approver) => createNoopSigner(approver)),

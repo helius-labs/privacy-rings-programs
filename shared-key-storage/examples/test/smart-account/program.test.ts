@@ -9,10 +9,11 @@ import {
 } from "@solana/kit";
 
 import {
-  checkSyncConsensus,
+  checkSynchronousConsensus,
   compileSyncPayload,
   decodeSettings,
-  Permission,
+  ALL_PERMISSIONS,
+  SmartAccountPermission,
   rotationActions,
   type Settings,
 } from "../../helpers/smart-account/program.js";
@@ -44,12 +45,12 @@ describe("squads", () => {
   it("orders rotation actions add, change threshold, remove", async () => {
     const [a, b, c, d] = await keys(4);
     const current = settingsWith(
-      [a!, b!, c!].map((key) => ({ key, permissions: Permission.All })),
+      [a!, b!, c!].map((key) => ({ key, permissions: ALL_PERMISSIONS })),
       3,
     );
     const actions = rotationActions(
       current,
-      [{ key: d!, permissions: Permission.All }],
+      [{ key: d!, permissions: ALL_PERMISSIONS }],
       1,
     );
     assert.deepEqual(
@@ -66,17 +67,23 @@ describe("squads", () => {
 
   it("leaves the threshold alone when it does not change", async () => {
     const [a, b] = await keys(2);
-    const current = settingsWith([{ key: a!, permissions: Permission.All }], 1);
+    const current = settingsWith(
+      [{ key: a!, permissions: ALL_PERMISSIONS }],
+      1,
+    );
     const actions = rotationActions(
       current,
       [
-        { key: a!, permissions: Permission.All },
-        { key: b!, permissions: Permission.All },
+        { key: a!, permissions: ALL_PERMISSIONS },
+        { key: b!, permissions: ALL_PERMISSIONS },
       ],
       1,
     );
     assert.deepEqual(actions, [
-      { kind: "addSigner", signer: { key: b!, permissions: Permission.All } },
+      {
+        kind: "addSigner",
+        newSigner: { key: b!, permissions: ALL_PERMISSIONS },
+      },
     ]);
   });
 
@@ -84,36 +91,47 @@ describe("squads", () => {
     const [a, b, c] = await keys(3);
     const settings = settingsWith(
       [
-        { key: a!, permissions: Permission.Initiate | Permission.Vote },
-        { key: b!, permissions: Permission.Vote | Permission.Execute },
-        { key: c!, permissions: Permission.Vote },
+        {
+          key: a!,
+          permissions:
+            SmartAccountPermission.Initiate | SmartAccountPermission.Vote,
+        },
+        {
+          key: b!,
+          permissions:
+            SmartAccountPermission.Vote | SmartAccountPermission.Execute,
+        },
+        { key: c!, permissions: SmartAccountPermission.Vote },
       ],
       2,
     );
-    assert.doesNotThrow(() => checkSyncConsensus(settings, [a!, b!]));
+    assert.doesNotThrow(() => checkSynchronousConsensus(settings, [a!, b!]));
     assert.throws(
-      () => checkSyncConsensus(settings, [a!, c!]),
+      () => checkSynchronousConsensus(settings, [a!, c!]),
       /initiate, vote and execute/,
     );
     assert.throws(
-      () => checkSyncConsensus(settings, [b!]),
+      () => checkSynchronousConsensus(settings, [b!]),
       /initiate, vote and execute/,
     );
-    assert.throws(() => checkSyncConsensus(settings, [a!, a!]), /duplicate/);
+    assert.throws(
+      () => checkSynchronousConsensus(settings, [a!, a!]),
+      /duplicate/,
+    );
   });
 
   it("needs threshold voters even when the permissions are covered", async () => {
     const [a, b] = await keys(2);
     const settings = settingsWith(
       [
-        { key: a!, permissions: Permission.All },
-        { key: b!, permissions: Permission.Vote },
+        { key: a!, permissions: ALL_PERMISSIONS },
+        { key: b!, permissions: SmartAccountPermission.Vote },
       ],
       2,
     );
-    assert.doesNotThrow(() => checkSyncConsensus(settings, [a!, b!]));
+    assert.doesNotThrow(() => checkSynchronousConsensus(settings, [a!, b!]));
     assert.throws(
-      () => checkSyncConsensus(settings, [a!]),
+      () => checkSynchronousConsensus(settings, [a!]),
       /need 2 voting approvers, got 1/,
     );
   });
@@ -121,16 +139,17 @@ describe("squads", () => {
   it("refuses a time lock or a settings authority", async () => {
     const [a] = await keys(1);
     const settings = settingsWith(
-      [{ key: a!, permissions: Permission.All }],
+      [{ key: a!, permissions: ALL_PERMISSIONS }],
       1,
     );
-    assert.doesNotThrow(() => checkSyncConsensus(settings, [a!]));
+    assert.doesNotThrow(() => checkSynchronousConsensus(settings, [a!]));
     assert.throws(
-      () => checkSyncConsensus({ ...settings, timeLock: 60 }, [a!]),
+      () => checkSynchronousConsensus({ ...settings, timeLock: 60 }, [a!]),
       /time_lock 0/,
     );
     assert.throws(
-      () => checkSyncConsensus({ ...settings, settingsAuthority: a! }, [a!]),
+      () =>
+        checkSynchronousConsensus({ ...settings, settingsAuthority: a! }, [a!]),
       /settings authority/,
     );
   });

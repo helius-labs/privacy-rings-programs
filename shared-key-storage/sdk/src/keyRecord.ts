@@ -53,7 +53,7 @@ export interface EncryptedViewingKey {
 
 export interface KeyRecord {
   /** The wallet account this record belongs to: Squads Settings or the Swig. */
-  readonly settings: Address;
+  readonly accountId: Address;
   /** 0 at create, incremented by every rotate. */
   readonly epoch: bigint;
   readonly sharedViewingPublicKey: Bytes33;
@@ -83,7 +83,7 @@ export interface SharedSecrets {
 export function encodeKeyRecord(record: KeyRecord): Uint8Array {
   checkHistoryLength(record);
   const writer = new ByteWriter()
-    .bytes(addressEncoder.encode(record.settings))
+    .bytes(addressEncoder.encode(record.accountId))
     .u64(record.epoch)
     .bytes(record.sharedViewingPublicKey)
     .bytes(record.ephemeralPublicKey)
@@ -105,7 +105,7 @@ export function encodeKeyRecord(record: KeyRecord): Uint8Array {
 
 export function decodeKeyRecord(data: Uint8Array): KeyRecord {
   const reader = new ByteReader(data, "key record");
-  const settings = addressDecoder.decode(reader.bytes(32, "settings"));
+  const accountId = addressDecoder.decode(reader.bytes(32, "account id"));
   const epoch = reader.u64("epoch");
   const sharedViewingPublicKey = reader.bytes(
     33,
@@ -139,7 +139,7 @@ export function decodeKeyRecord(data: Uint8Array): KeyRecord {
   }
   reader.end();
   return {
-    settings,
+    accountId,
     epoch,
     sharedViewingPublicKey,
     ephemeralPublicKey,
@@ -166,7 +166,7 @@ export function checkKeyHistory(record: KeyRecord, previous?: KeyRecord): void {
   }
   checkHistoryLength(previous);
   if (
-    record.settings !== previous.settings ||
+    record.accountId !== previous.accountId ||
     record.epoch !== previous.epoch + 1n ||
     !bytesEqual(record.nullifierPublicKey, previous.nullifierPublicKey)
   ) {
@@ -233,7 +233,7 @@ export function generateNullifierKey(): NullifierKey {
  */
 export function buildKeyRecord(
   input: Readonly<{
-    settings: Address;
+    accountId: Address;
     epoch: bigint;
     secrets: SharedSecrets;
     previousViewingKeys: readonly ViewingKey[];
@@ -270,7 +270,7 @@ export function buildKeyRecord(
     const nullifierSecret = input.secrets.nullifierKey.secretBytes();
     try {
       return {
-        settings: input.settings,
+        accountId: input.accountId,
         epoch: input.epoch,
         sharedViewingPublicKey: sharedViewingPublicKey.toBytes(),
         ephemeralPublicKey: ephemeral.publicKey().toBytes(),
@@ -414,7 +414,7 @@ export function recoverSharedSecrets(
  * signer set and the vault's registered viewing key.
  */
 export interface OnChainKeyState {
-  readonly settings: Address;
+  readonly accountId: Address;
   readonly signers: readonly Address[];
   readonly registeredViewingPublicKey: Bytes33;
 }
@@ -423,7 +423,7 @@ export function isCurrentKeyRecord(
   record: KeyRecord,
   state: OnChainKeyState,
 ): boolean {
-  if (record.settings !== state.settings) return false;
+  if (record.accountId !== state.accountId) return false;
   const recordSigners = record.entries
     .map((entry) => entry.signer)
     .sort(compareAddresses);
